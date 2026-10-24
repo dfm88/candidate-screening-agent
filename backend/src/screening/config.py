@@ -24,10 +24,12 @@ class Settings(BaseSettings):
     llm_content_logging: bool = False
     # Built frontend, served by the API in the container; absent in local dev where Vite serves it.
     static_dir: Path | None = None
-    # Comma-separated model specs: the first is the primary, the rest its fallbacks (see agent.build_model).
-    screening_models: str = "google-cloud:gemini-3.8-flash,google-cloud:gemini-3.5-flash"
-    # Vertex AI location for candidate data. `eu` keeps processing in the EU (multi-region endpoint).
-    vertex_location: str = "eu"
+    # PydanticAI model strings. The model for live turns, and the fallbacks tried in order when it fails (a JSON list
+    # in the env). The primary runs on Vertex AI in the EU; the last fallback answers only when Vertex fails.
+    screening_model: str = "google-cloud:gemini-3.8-flash"
+    screening_fallback_models: list[str] = ["openai:gpt-6-luna"]
+    # Vertex AI location for google-cloud: models. `eu` keeps processing in the EU (multi-region endpoint).
+    google_cloud_location: str = "eu"
     google_cloud_project: str | None = None
     max_history_messages: int = 50
 
@@ -107,6 +109,7 @@ class ClientConfig(BaseModel):
     locations: list[Location]
     platforms: dict[str, list[str]]
     faq: list[FaqEntry]
+    regional_terms: list[dict[Country, str]]
     labels: dict[Locale, dict[str, str]]
     templates: dict[str, dict[Locale, list[str]]]
 
@@ -116,6 +119,9 @@ class ClientConfig(BaseModel):
             missing = set(Locale) - set(by_locale)
             if missing:
                 raise ValueError(f"template {key!r} is missing locales {sorted(missing)}")
+        for row in self.regional_terms:
+            if set(row) != set(Country):
+                raise ValueError(f"regional term {row} needs exactly one term per country {sorted(Country)}")
         return self
 
     @cached_property

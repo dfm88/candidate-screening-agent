@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 import pytest
 from pydantic_ai import (
     ModelMessage,
-    ModelRequest,
     ModelResponse,
     TextPart,
     ToolCallPart,
@@ -56,7 +55,7 @@ async def test_tool_calls_update_the_state_and_paragraphs_become_messages() -> N
     assert result.state.is_saved(FieldName.SERVICE_AREA)
 
 
-async def test_only_the_current_message_carries_the_context_block() -> None:
+async def test_each_turn_is_stored_exactly_as_sent_with_its_context_block() -> None:
     sent: list[list[ModelMessage]] = []
     result = await turn(["sí, tengo carnet"], sent)
 
@@ -64,14 +63,13 @@ async def test_only_the_current_message_carries_the_context_block() -> None:
     assert isinstance(prompt_sent, UserPromptPart) and "<system_ctx>" in str(prompt_sent.content)
     assert "now: 2026-10-24 10:00 (Saturday) Europe/Madrid" in str(prompt_sent.content)
 
-    stored_prompts = [
-        p for m in result.messages if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, UserPromptPart)
-    ]
-    assert [p.content for p in stored_prompts] == ["sí, tengo carnet"]
-    # The tool call and its result are stored with the turn, so later turns see what was saved.
-    stored_parts = [p for m in result.messages for p in m.parts]
-    assert any(isinstance(p, ToolCallPart) for p in stored_parts)
-    assert any(isinstance(p, ToolReturnPart) for p in stored_parts)
+    # Append-only history keeps the provider's prompt cache valid: the stored turn is what was sent, tool call,
+    # tool result and context snapshot included.
+    stored_parts = [part for message in result.messages for part in message.parts]
+    stored_prompts = [part for part in stored_parts if isinstance(part, UserPromptPart)]
+    assert [part.content for part in stored_prompts] == [prompt_sent.content]
+    assert any(isinstance(part, ToolCallPart) for part in stored_parts)
+    assert any(isinstance(part, ToolReturnPart) for part in stored_parts)
 
 
 async def test_candidate_text_cannot_pose_as_a_system_block() -> None:

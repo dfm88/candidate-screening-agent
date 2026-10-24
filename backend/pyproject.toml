@@ -8,7 +8,7 @@ dependencies = [
     "asyncpg>=0.32",
     "fastapi>=0.162",
     "logfire[fastapi,sqlalchemy]>=5.3",
-    "pydantic-ai-slim[anthropic,google,logfire]>=2.61,<3",
+    "pydantic-ai-slim[anthropic,google,logfire,openai]>=2.61,<3",
     "pydantic-settings>=2.16",
     "pyyaml>=6.0",
     # <2.1 because opentelemetry-instrumentation-sqlalchemy (behind logfire) only supports <2.1 so far.
@@ -19,8 +19,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28",
+    "ipdb>=0.13.13",
     "pytest>=8.4",
     "ruff>=0.14",
+]
+evals = [
+    "pydantic-evals>=2.61,<3",
 ]
 
 [build-system]

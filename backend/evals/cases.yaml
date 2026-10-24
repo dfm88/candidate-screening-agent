@@ -1,0 +1,239 @@
+# Eval cases: synthetic candidates, in both countries. The profile is for the simulator (in English); metadata
+# is what the screening should end with. All clocks are Wednesday 21 October 2026, 16:00 UTC: 18:00 in Spain,
+# 10:00 in Mexico. Don't copy these exchanges into the prompt as examples (AGENTS.md: changing the prompt).
+cases:
+  - name: es_madrid_burst_qualified
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Marta Ruiz Ortega
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Marta Ruiz Ortega, 27, from Madrid. You write casual Spanish from Spain, mostly lowercase.
+        - Driving license: Spanish car license (B), valid, for six years.
+        - You live in Argüelles, postal code 28015.
+        - Availability: part-time and weekends. Schedule: afternoons and evenings.
+        - Experience: a year and a half delivering for Glovo and Just Eat.
+        - Start date: Monday 2 November.
+        Behaviour: right after confirming your name, give your license and postal code in one message. When asked
+        about availability, give availability and schedule together. Once during the chat, ask whether you need
+        your own motorbike or car.
+    metadata:
+      tags: [es, burst, faq]
+      status: completed
+      outcome: qualified
+      final_language: es
+      answers:
+        full_name: Marta Ruiz Ortega
+        license: "yes"
+        location_id: es-mad-chamberi
+        availability: [part_time, weekends]
+        schedule: [afternoon, evening]
+        experience_years: 1.5
+        platforms: [Glovo, Just Eat]
+        start_date: 2026-11-02
+
+  - name: es_valencia_license_in_progress
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Pablo Sanz Ferrer
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Pablo Sanz Ferrer, 21, from Valencia. You write short messages in Spanish from Spain.
+        - Driving license: you don't have one yet. You passed the theory test and take the practical exam in
+          December. Say so when asked.
+        - You live in Ruzafa, postal code 46004.
+        - Availability: full-time. Schedule: flexible. No delivery experience. Could start right away.
+        Behaviour: if told you don't qualify, accept it politely. If offered news about other roles, say yes.
+    metadata:
+      tags: [es, knockout]
+      status: completed
+      outcome: not_qualified
+      final_language: es
+      talent_pool_opt_in: true
+      answers:
+        full_name: Pablo Sanz Ferrer
+        license: "no"
+
+  - name: es_getafe_outside_area
+    inputs:
+      vacancy: es-mad-getafe
+      name_on_application: Irene Castro Gil
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Irene Castro Gil, 34. You write in Spanish from Spain, friendly and brief.
+        - Driving license: valid Spanish car license.
+        - You live in Alcalá de Henares, postal code 28801. You don't plan to move.
+        - Availability: weekends. Schedule: mornings. Two years with Amazon Flex. Could start in a week.
+        Behaviour: if told your area isn't covered, say you understand. If offered news about other roles, say no,
+        thanks.
+    metadata:
+      tags: [es, knockout]
+      status: completed
+      outcome: not_qualified
+      final_language: es
+      talent_pool_opt_in: false
+      answers:
+        license: "yes"
+        location_id: null
+
+  - name: es_barcelona_english_speaker
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Tom Becker
+      application_language: en
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Tom Becker, 30, a German living in Barcelona. You write in English only.
+        - Driving license: German car license, an EU license, so valid in Spain. Say it's German at first; if asked
+          whether it's valid in Spain, say yes, EU licenses are.
+        - You live near Sagrada Família. You don't know the postal code by heart; if asked again for it, check and
+          say 08013.
+        - Availability: full-time. Schedule: flexible, any time.
+        - Experience: three years with Deliveroo and Uber Eats in Berlin.
+        - Start date: right away.
+    metadata:
+      tags: [es, english]
+      status: completed
+      outcome: qualified
+      final_language: en
+      answers:
+        full_name: Tom Becker
+        license: "yes"
+        location_id: es-bcn-gracia
+        availability: [full_time]
+        schedule: [flexible]
+        experience_years: 3
+        platforms: [Deliveroo, Uber Eats]
+        start_date: 2026-10-21
+
+  - name: es_guadalajara_switch_and_correction
+    inputs:
+      vacancy: es-gua-centro
+      name_on_application: Andrés Molina Rey
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Andrés Molina Rey, 25, living in Guadalajara (Spain).
+        - Language: you start in Spanish from Spain. Right after you answer the driving license question, switch
+          to English for the rest of the chat: say you're more comfortable in English and ask to continue in it.
+        - Driving license: valid Spanish car license.
+        - Postal code 19003.
+        - Availability: part-time. Schedule: mornings. No delivery experience at all.
+        - Start date: first say "in two weeks". When the assistant sums up your answers, correct it: you can start
+          next Monday after all.
+    metadata:
+      tags: [es, language-switch, correction]
+      status: completed
+      outcome: qualified
+      final_language: en
+      answers:
+        full_name: Andrés Molina Rey
+        license: "yes"
+        location_id: es-gua-centro
+        availability: [part_time]
+        schedule: [morning]
+        experience_years: 0
+        start_date: 2026-10-26
+
+  - name: mx_guadalajara_colonia_qualified
+    inputs:
+      vacancy: mx-gdl-americana
+      name_on_application: Daniela Ramírez López
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Daniela Ramírez López, 29, from Guadalajara, Jalisco. You write informal Mexican Spanish.
+        - Driving license: valid Jalisco driver's license.
+        - You live in colonia Providencia. Give the colonia first; only if asked for the postal code, say 44630.
+        - Availability: part-time. Schedule: say "en las tardes y a veces en la noche"; if asked to clarify, both
+          afternoons and evenings.
+        - Experience: two years with DiDi Food and Rappi.
+        - Start date: in two weeks.
+    metadata:
+      tags: [mx, place, ambiguous]
+      status: completed
+      outcome: qualified
+      final_language: es
+      answers:
+        full_name: Daniela Ramírez López
+        license: "yes"
+        location_id: mx-gdl-americana
+        availability: [part_time]
+        schedule: [afternoon, evening]
+        experience_years: 2
+        platforms: [DiDi Food, Rappi]
+        start_date: 2026-11-04
+
+  - name: mx_monterrey_foreign_license_unclear
+    inputs:
+      vacancy: mx-mty-centro
+      name_on_application: Luis Alberto Pérez Gómez
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Luis Alberto Pérez Gómez, 31, Colombian, living in Monterrey for eight months. You write in
+        Colombian Spanish, polite.
+        - Driving license: from Colombia. You don't know whether it's valid for driving in Mexico; every time you
+          are asked, say you're not sure, you never checked.
+        - Postal code 64060.
+        - Availability: full-time. Schedule: mornings. No delivery experience. Could start right away.
+    metadata:
+      tags: [mx, unclear, tries]
+      status: completed
+      outcome: needs_human_review
+      unclear: [license]
+      final_language: es
+      answers:
+        full_name: Luis Alberto Pérez Gómez
+        location_id: mx-mty-centro
+        availability: [full_time]
+        schedule: [morning]
+        experience_years: 0
+        start_date: 2026-10-21
+
+  - name: mx_cdmx_person_request
+    inputs:
+      vacancy: mx-cdmx-coyoacan
+      name_on_application: Fernanda Torres Medina
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Fernanda Torres Medina, 38, from Mexico City. You write polite Mexican Spanish.
+        - Driving license: valid.
+        - You live in Copilco, postal code 04360.
+        - Right after giving your postal code, ask to talk with a real person: you want to discuss the type of
+          contract and benefits with someone. If the assistant offers to finish the remaining questions first,
+          agree.
+        - Availability: full-time. Schedule: flexible. Experience: one year with Uber Eats. Start date: 1 November.
+    metadata:
+      tags: [mx, person]
+      status: completed
+      outcome: needs_human_review
+      review_reasons: [human_requested]
+      final_language: es
+      answers:
+        full_name: Fernanda Torres Medina
+        license: "yes"
+        location_id: mx-cdmx-coyoacan
+        availability: [full_time]
+        schedule: [flexible]
+        experience_years: 1
+        platforms: [Uber Eats]
+        start_date: 2026-11-01
+
+  - name: mx_merida_not_interested
+    inputs:
+      vacancy: mx-mid-centro
+      name_on_application: Jorge Canul Pech
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Jorge Canul Pech, from Mérida. You write brief Mexican Spanish. You already found another job and
+        aren't interested anymore: say so politely in your first message, then end the chat.
+    metadata:
+      tags: [mx, withdrawn]
+      status: withdrawn
+      final_language: es

@@ -42,11 +42,17 @@ Write tests where they pay off:
 
 ## LLM, prompts and evals
 
-- Prompts live in the repo (`backend/src/screening/prompts/`). The prompt version is a content hash recorded on every turn and eval run.
-- Prompts, tool names and descriptions are in English. The instructions carry the language and regional-wording rules; each turn's state block gives the country of work.
-- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults. The prompt version also covers these settings.
-- **Candidate data is processed in the EU only** (Vertex AI `eu` multi-region). Eval-only components (simulator, judge, benchmarks) see synthetic data only and may use other endpoints.
+- Prompts live in the repo (`backend/src/screening/prompts/`) and stay client-agnostic: client knowledge (FAQ, regional glossary, persona) lives in the client config and is rendered into the instructions.
+- The prompt version is a hash of the rendered instructions (client data included) and the model settings, recorded on every turn and eval run. A changed FAQ is a changed prompt.
+- Prompts, tool names and descriptions are in English. The instructions carry the language rules and the client's regional glossary; each turn's state block gives the country of work.
+- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults.
+- **Candidate data is processed in the EU** (Vertex AI `eu` multi-region). The one exception is the last fallback model, used only when the primary fails (see the README). Eval-only components (simulator, judge) see synthetic data only and may use other endpoints.
 - Spanish quality is checked by evals (regional terms, gender-neutral wording, fluency), because reviewers may not speak Spanish.
+
+**Changing the prompt**
+- **No eval-specific patches.** Never add a phrase, a name or an answer to the prompt just to make one case pass. Fix the general rule or the data instead, unless the item genuinely belongs in the prompt.
+- **Few-shot examples and eval cases stay separate.** Never paste a failing exchange into the prompt as an example and then test on that same case: that measures memorization. Write a different example that teaches the general behaviour, or vary the case in the eval. The failing case stays as a held-out check.
+- **Every observed failure becomes an eval case first, then the fix.** Judge the fix on the whole set, not only on that case.
 
 ## Observability and privacy
 

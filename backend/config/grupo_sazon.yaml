@@ -169,6 +169,17 @@ faq:
     answer: Yes, Grupo Sazón provides the uniform and rain gear.
 
 # Quick-reply labels and the field names used in reminders.
+# The word each country uses for the same thing. The agent writes Spanish with the country of work's terms only;
+# the evals flag the other country's terms. One row per concept, every country filled in.
+regional_terms:
+  - {ES: carnet de conducir, MX: licencia de manejo}
+  - {ES: conducir, MX: manejar}
+  - {ES: móvil, MX: celular}
+  - {ES: coche, MX: carro}
+  - {ES: jornada completa, MX: tiempo completo}
+  - {ES: media jornada, MX: medio tiempo}
+  - {ES: equipo de selección, MX: equipo de reclutamiento}
+
 labels:
   es-ES:
     start: Empezar

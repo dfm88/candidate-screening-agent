@@ -33,9 +33,54 @@ cd backend
 uv run --env-file .env python -m screening.cli --vacancy mx-cdmx-roma --name "José Hernández" --show-tools
 ```
 
-By default the models run on Vertex AI in the EU, which needs the Google Cloud variables in `.env`. To try it with a single API key instead, set for example `SCREENING_MODELS=google:gemini-3.8-flash` and `GOOGLE_API_KEY`. That path is for local testing with test data only: in production, candidate data goes only to Vertex AI in the EU.
+**Models and where candidate data goes.** Live turns run on Gemini through Vertex AI in the `eu` multi-region, so processing stays in the EU. If that model fails (an outage, or a run of rate limits), PydanticAI's `FallbackModel` hands the message to the last fallback, an OpenAI model through OpenAI's API, which is outside the EU. It keeps a live chat answering, and it only sees data when the primary fails. Whether that's acceptable is a client decision (open question 4 in the process design); the EU-only alternatives are a second EU model as the fallback, or Claude in the EU once the project has quota. Both models are set in `.env` (`SCREENING_MODEL`, `SCREENING_FALLBACK_MODELS`).
+
+To run without our Google Cloud project, set `SCREENING_MODEL=google:gemini-3.8-flash`, `SCREENING_FALLBACK_MODELS=[]` and `GOOGLE_API_KEY`. That's the same model through the Gemini API. This path is for local testing with test data only.
 
 To run the production image locally: `docker compose --profile app up --build` (http://localhost:8080). It picks up `backend/.env` if present.
+
+## Evals
+
+The process design is enforced by evals, not unit tests. `backend/evals/` (Pydantic Evals) runs synthetic candidates from `cases.yaml`, in both countries and in Spanish and English, against the real agent. A simulated candidate (an LLM playing the persona) chats with the agent in memory until the conversation ends, and labels what each agent message asked for. Then:
+
+- **Deterministic checks** carry the process rules: the outcome and review reasons, the saved answers, knockouts asked first, nothing asked again, at most two tries per field, message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent as a message on its own, reply language, the country's regional terms and gender-neutral wording. They decide the ranking.
+- **An LLM judge** (OpenAI `gpt-6-luna`) scores tone, naturalness and language quality. Its scores on OpenAI rows are marked: judges tend to favour their own family's style.
+- **Per config:** p50/p95 latency per turn, cost per completed screening (genai-prices), the share of input tokens read from the provider's prompt cache, cache collapses flagged by PydanticAI's instrumentation, and which model answered each turn.
+
+```bash
+cd backend
+uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash            # one model
+uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash \
+    --fallback openai:gpt-6-luna                                                                       # the demo config
+uv run --group evals --env-file .env python -m evals.run --model A --model B --repeat 2                # the arena
+```
+
+`--settings '{"temperature": 0.2}'` merges into the model settings. Rate limits are retried with backoff (Pydantic Evals' `retry_task`), never handed to another model, so a row measures one config. Results are appended to [`backend/evals/results/arena.md`](backend/evals/results/arena.md); full transcripts land in `backend/evals/results/transcripts/` (not committed). The simulator and the judge only see synthetic data, so they may run outside the EU.
+
+### Why Gemini 3.8 Flash
+
+The arena on the final prompt (9 cases × 2 runs per model, 2026-10-24; full table in [`arena.md`](backend/evals/results/arena.md)):
+
+| | Gemini 3.8 Flash | Gemini 3.5 Flash | Gemini 3.5 Flash-Lite | gpt-6-luna |
+|---|---|---|---|---|
+| Runs in the EU | yes | yes | yes | no |
+| All process checks | 0.97 | 0.94 | 0.97 | 0.99 |
+| Outcome right | 1.00 | 1.00 | **0.94** | 1.00 |
+| Nothing asked again | 1.00 | **0.67** | 0.94 | 0.94 |
+| At most two tries | 1.00 | 1.00 | **0.89** | 1.00 |
+| No acknowledgement on its own | 0.72 | 0.83 | 0.94 | 1.00 |
+| Judge: tone / naturalness / language | 0.86 / 0.83 / 0.93 | 0.84 / 0.80 / 0.85 | 0.77 / 0.81 / 0.90 | 0.83 / 0.80 / 0.90 * |
+| p50 / p95 per turn | 3.2 s / 10.7 s | 1.9 s / 2.5 s | 1.2 s / 1.9 s | 3.2 s / 6.1 s |
+| Cost per completed screening | $0.047 | $0.045 | $0.010 | $0.001 |
+| Input read from the prompt cache | 2% | 61% | 55% | 97% |
+
+\* judged by a model of the same family.
+
+- **Gemini 3.8 Flash is the only EU model with no process or outcome errors.** Its misses are style only (a closing "Muchas gracias" sent as its own message), and it has the best judge scores.
+- **3.5 Flash-Lite** is 3× faster and 4.6× cheaper, but once turned "I don't know if my Colombian license is valid in Mexico" into a "no" (a wrongful knockout) and asked for an area three times. **3.5 Flash** saves the name from the application before the candidate confirms it.
+- **gpt-6-luna** scores best on the checks and costs 40× less, but runs outside the EU, so it's the last fallback rather than the primary (open question 4).
+- **The cost of 3.8 Flash is mostly uncached input.** On Vertex AI it read only 2% of its input from the implicit prompt cache. In probes it cached nothing on requests under about 4K tokens and was inconsistent above, and our static prefix (instructions and tools) is about 3.4K tokens. We don't pad the prompt to reach a cache minimum. The history is append-only, so the models that cache keep their prefix: PydanticAI's cache-collapse detector stays at zero for them; Flash-Lite's collapses come from Gemini's best-effort implicit cache.
+- **Latency is the trade-off.** p50 is about 3 s, but p95 varied between 10 and 16 s across runs of 3.8 Flash on Vertex's shared capacity. The arena runs again on the final prompt before the demo.
 
 ## Deployment (GCP)
 

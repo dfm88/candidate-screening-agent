@@ -8,32 +8,26 @@ import hashlib
 import html
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import logfire
-from anthropic import AsyncAnthropicVertex
-from pydantic_ai import Agent, ModelMessage, ModelRequest, RunContext, UserPromptPart
+from pydantic_ai import Agent, ModelMessage, RunContext
 from pydantic_ai.models import Model, infer_model
-from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
 from screening import domain
-from screening.config import ClientConfig, Settings
+from screening.config import ClientConfig, Country, Settings
 from screening.domain import (
     Application,
     EndReason,
     FieldName,
     NewAnswers,
-    Outcome,
-    ReviewFlag,
-    ReviewReason,
     ScreeningState,
     Status,
     describe_saved,
@@ -42,8 +36,6 @@ from screening.domain import (
 
 PROMPT = (Path(__file__).parent / "prompts" / "screening_agent.md").read_text(encoding="utf-8")
 MODEL_SETTINGS = ModelSettings(temperature=0.4, thinking=False)
-# Recorded on every turn and eval run: a change to the prompt or to the settings is a new version.
-PROMPT_VERSION = hashlib.sha256((PROMPT + json.dumps(MODEL_SETTINGS, sort_keys=True)).encode()).hexdigest()[:8]
 
 
 @dataclass
@@ -57,11 +49,24 @@ class Deps:
 screening_agent = Agent(deps_type=Deps, output_type=str, model_settings=MODEL_SETTINGS, name="screening")
 
 
+def render_instructions(config: ClientConfig) -> str:
+    """The prompt with the client's data: persona, FAQ and regional glossary."""
+    faq = "\n".join(f"- {entry.question} {entry.answer}" for entry in config.faq)
+    regional_terms = "\n".join(
+        f"- {country}: " + ", ".join(row[country] for row in config.regional_terms) for country in Country
+    )
+    return PROMPT.format(persona=config.persona_name, client=config.client_name, faq=faq, regional_terms=regional_terms)
+
+
+def prompt_version(config: ClientConfig, model_settings: ModelSettings = MODEL_SETTINGS) -> str:
+    """Recorded on every turn and eval run: a changed prompt, client data or model setting is a new version."""
+    content = render_instructions(config) + json.dumps(model_settings, sort_keys=True)
+    return hashlib.sha256(content.encode()).hexdigest()[:8]
+
+
 @screening_agent.instructions
 def instructions(ctx: RunContext[Deps]) -> str:
-    config = ctx.deps.config
-    faq = "\n".join(f"- {entry.question} {entry.answer}" for entry in config.faq)
-    return PROMPT.format(persona=config.persona_name, client=config.client_name, faq=faq)
+    return render_instructions(ctx.deps.config)
 
 
 @screening_agent.tool(docstring_format="google", require_parameter_descriptions=True)
@@ -98,11 +103,7 @@ def request_human(ctx: RunContext[Deps], reason: str) -> str:
     Args:
         reason: What the candidate wants, in a few words.
     """
-    state = ctx.deps.state
-    state.flags.append(ReviewFlag(reason=ReviewReason.HUMAN_REQUESTED, detail=reason))
-    if state.status is Status.COMPLETED:
-        # After the close, asking for a person moves any outcome to review (process design: outcomes).
-        state.outcome = Outcome.NEEDS_HUMAN_REVIEW
+    ctx.deps.state = domain.request_human(ctx.deps.state, reason)
     return "Recorded: a person from the team will review the screening and contact the candidate."
 
 
@@ -124,15 +125,9 @@ def end_conversation(ctx: RunContext[Deps], reason: EndReason) -> str:
     Args:
         reason: Why the conversation ends.
     """
-    state = ctx.deps.state
+    ctx.deps.state = domain.end_conversation(ctx.deps.state, reason)
     if reason is EndReason.CONDUCT:
-        state.flags.append(ReviewFlag(reason=ReviewReason.CONDUCT))
-        if state.status is not Status.COMPLETED:
-            state.status = transition(state.status, Status.COMPLETED)
-        state.outcome = Outcome.NEEDS_HUMAN_REVIEW
         return "Ended. A person from the team will review the conversation. Say a short, polite goodbye."
-    if state.status is not Status.WITHDRAWN:
-        state.status = transition(state.status, Status.WITHDRAWN)
     return "Ended: nobody will contact the candidate again. Say a short, polite goodbye."
 
 
@@ -144,29 +139,23 @@ def finish_screening(ctx: RunContext[Deps]) -> domain.FinishResult:
     return result
 
 
+def model_from_string(model: str, settings: Settings) -> Model:
+    """A model from its PydanticAI model string, e.g. `google-cloud:gemini-3.8-flash` or `openai:gpt-6-luna`."""
+    provider, _, name = model.partition(":")
+    if provider == "google-cloud":
+        # The provider is explicit so the location always applies. From a plain string, GoogleCloudProvider falls
+        # back to us-central1 without GOOGLE_CLOUD_LOCATION, and with GOOGLE_API_KEY in the env it switches to
+        # Express Mode on that key and ignores the location. An explicit location makes it use ADC instead.
+        cloud = GoogleCloudProvider(project=settings.google_cloud_project, location=settings.google_cloud_location)
+        return GoogleModel(name, provider=cloud)
+    return infer_model(model)
+
+
 def build_model(settings: Settings) -> Model:
-    """The primary model and its fallbacks, from comma-separated specs in settings."""
-    models: list[Model] = []
-    for spec in settings.screening_models.split(","):
-        provider, _, name = spec.strip().partition(":")
-        # Candidate data stays in the EU: Vertex models always get the configured location explicitly, never
-        # the provider's us-central1 default.
-        if provider == "google-cloud":
-            location = settings.vertex_location
-            models.append(
-                GoogleModel(
-                    name, provider=GoogleCloudProvider(project=settings.google_cloud_project, location=location)
-                )
-            )
-        elif provider == "anthropic-vertex":
-            # PydanticAI has no model string for Claude on Vertex AI, so the Anthropic client is built here.
-            if not settings.google_cloud_project:
-                raise ValueError("anthropic-vertex models need GOOGLE_CLOUD_PROJECT")
-            client = AsyncAnthropicVertex(region=settings.vertex_location, project_id=settings.google_cloud_project)
-            models.append(AnthropicModel(name, provider=AnthropicProvider(anthropic_client=client)))
-        else:
-            models.append(infer_model(spec.strip()))
-    return models[0] if len(models) == 1 else FallbackModel(*models)
+    """The screening model, with its fallbacks tried in order when it fails."""
+    primary = model_from_string(settings.screening_model, settings)
+    fallbacks = [model_from_string(model, settings) for model in settings.screening_fallback_models]
+    return FallbackModel(primary, *fallbacks) if fallbacks else primary
 
 
 def render_context(state: ScreeningState, application: Application, config: ClientConfig, now: datetime) -> str:
@@ -206,7 +195,8 @@ def history_from_turns(turns: list[list[ModelMessage]], max_messages: int) -> li
 class TurnResult:
     reply: list[str]
     state: ScreeningState
-    # This turn's messages to store, the context block replaced by the candidate's words.
+    # This turn's messages, stored exactly as sent: the history stays append-only, so the provider's prompt cache
+    # keeps matching it. Each turn keeps its own <system_ctx> snapshot; the prompt says only the latest is current.
     messages: list[ModelMessage]
     usage: RunUsage
 
@@ -237,7 +227,7 @@ async def run_turn(
     with logfire.span(
         "screening turn {conversation_id}",
         conversation_id=conversation_id,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=prompt_version(config),
         status_before=status_before,
     ) as span:
         result = await screening_agent.run(
@@ -245,20 +235,5 @@ async def run_turn(
         )
         span.set_attributes({"status_after": deps.state.status, "outcome": deps.state.outcome or "none"})
 
-    # Only the current message carries the context block. Stored turns keep the candidate's words alone, so
-    # the history never replays a stale clock or state as current. Logfire keeps what was actually sent.
-    candidate_text = "\n".join(escaped)
-    stored = [
-        replace(
-            message,
-            parts=[
-                replace(part, content=candidate_text) if isinstance(part, UserPromptPart) else part
-                for part in message.parts
-            ],
-        )
-        if isinstance(message, ModelRequest)
-        else message
-        for message in result.new_messages()
-    ]
     reply = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", result.output) if paragraph.strip()]
-    return TurnResult(reply=reply, state=deps.state, messages=stored, usage=result.usage)
+    return TurnResult(reply=reply, state=deps.state, messages=result.new_messages(), usage=result.usage)

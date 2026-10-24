@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import logfire
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 
-from screening.agent import PROMPT_VERSION, build_model, history_from_turns, run_turn
+from screening.agent import build_model, history_from_turns, prompt_version, run_turn
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Language, Locale, Settings, load_client_config
 from screening.domain import Application, ScreeningState, Status, describe_saved
 
@@ -30,7 +30,8 @@ async def chat(vacancy: str, name: str, language: Language, show_tools: bool) ->
     location = config.locations_by_id[vacancy]
     model = build_model(settings)
     conversation_id = f"cli-{uuid.uuid4().hex[:8]}"
-    print(f"[{conversation_id} · prompt {PROMPT_VERSION} · {settings.screening_models}]\n")
+    models = " → ".join([settings.screening_model, *settings.screening_fallback_models])
+    print(f"[{conversation_id} · prompt {prompt_version(config)} · {models}]\n")
 
     first_message = config.render(
         "first_message", Locale.of(language, location.country), first_name=application.first_name, city=location.city

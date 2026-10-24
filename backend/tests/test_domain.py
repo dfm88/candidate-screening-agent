@@ -6,6 +6,7 @@ from screening.config import DEFAULT_CLIENT_CONFIG, Country, Language, load_clie
 from screening.domain import (
     Application,
     Availability,
+    EndReason,
     FieldName,
     LicenseAnswer,
     NewAnswers,
@@ -17,10 +18,12 @@ from screening.domain import (
     ScreeningState,
     StartDateSpec,
     Status,
+    end_conversation,
     finish_screening,
     lookup_place,
     match_postal_code,
     normalize_platforms,
+    request_human,
     resolve_start_date,
     save_answers,
     transition,
@@ -230,3 +233,17 @@ def test_unclear_optional_field_is_a_gap_and_still_qualified() -> None:
     state.unclear[FieldName.SCHEDULE] = "kept changing"
     _, result = finish_screening(state)
     assert (result.outcome, result.gaps) == (Outcome.QUALIFIED, [FieldName.SCHEDULE])
+
+
+def test_asking_for_a_person_after_the_close_moves_the_outcome_to_review_once() -> None:
+    state, _ = finish_screening(save(NewAnswers(license=LicenseAnswer.NO))[0])
+    state = request_human(request_human(state, "wants to explain"), "asks again")
+    assert state.outcome is Outcome.NEEDS_HUMAN_REVIEW
+    assert [flag.reason for flag in state.flags] == [ReviewReason.HUMAN_REQUESTED]
+
+
+def test_ending_for_conduct_closes_for_review_and_other_reasons_withdraw() -> None:
+    state = end_conversation(in_progress(), EndReason.CONDUCT)
+    assert (state.status, state.outcome) == (Status.COMPLETED, Outcome.NEEDS_HUMAN_REVIEW)
+    state = end_conversation(in_progress(), EndReason.NOT_INTERESTED)
+    assert (state.status, state.outcome) == (Status.WITHDRAWN, None)

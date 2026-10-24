@@ -406,6 +406,30 @@ def finish_screening(state: ScreeningState) -> tuple[ScreeningState, FinishResul
     return state, FinishResult(finished=True, outcome=outcome, reasons=reasons, gaps=state.gaps)
 
 
+def request_human(state: ScreeningState, detail: str) -> ScreeningState:
+    """The candidate asks for a person. After the close, that moves any outcome to review."""
+    state = state.model_copy(deep=True)
+    if not any(flag.reason is ReviewReason.HUMAN_REQUESTED for flag in state.flags):
+        state.flags.append(ReviewFlag(reason=ReviewReason.HUMAN_REQUESTED, detail=detail))
+    if state.status is Status.COMPLETED:
+        state.outcome = Outcome.NEEDS_HUMAN_REVIEW
+    return state
+
+
+def end_conversation(state: ScreeningState, reason: EndReason) -> ScreeningState:
+    """Abuse closes the screening for a person to review; any other reason withdraws it, with no outcome change."""
+    state = state.model_copy(deep=True)
+    if reason is EndReason.CONDUCT:
+        if not any(flag.reason is ReviewReason.CONDUCT for flag in state.flags):
+            state.flags.append(ReviewFlag(reason=ReviewReason.CONDUCT))
+        if state.status is not Status.COMPLETED:
+            state.status = transition(state.status, Status.COMPLETED)
+        state.outcome = Outcome.NEEDS_HUMAN_REVIEW
+    elif state.status is not Status.WITHDRAWN:
+        state.status = transition(state.status, Status.WITHDRAWN)
+    return state
+
+
 # --- Lookups ---------------------------------------------------------------------------------------------------
 
 _PLACE_PREFIXES = ("colonia ", "col ", "barrio ", "barri ", "fraccionamiento ")

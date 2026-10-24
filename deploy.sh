@@ -84,12 +84,23 @@ if ! gc secrets describe database-url >/dev/null 2>&1; then
 fi
 
 secrets="DATABASE_URL=database-url:latest"
+env_vars="ENVIRONMENT=${ENVIRONMENT:-demo},GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},LLM_CONTENT_LOGGING=${LLM_CONTENT_LOGGING}"
 if [[ -n "${LOGFIRE_TOKEN:-}" ]]; then
   log "LOGFIRE_TOKEN secret"
   upsert_secret logfire-token "$LOGFIRE_TOKEN"
 fi
 if gc secrets describe logfire-token >/dev/null 2>&1; then
   secrets="${secrets},LOGFIRE_TOKEN=logfire-token:latest"
+fi
+# The last fallback model (OpenAI) answers only when Vertex AI fails; without the key the app has no fallback.
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  log "OPENAI_API_KEY secret"
+  upsert_secret openai-api-key "$OPENAI_API_KEY"
+fi
+if gc secrets describe openai-api-key >/dev/null 2>&1; then
+  secrets="${secrets},OPENAI_API_KEY=openai-api-key:latest"
+else
+  env_vars="${env_vars},SCREENING_FALLBACK_MODELS=[]"
 fi
 
 log "Deploying ${SERVICE} to Cloud Run"
@@ -99,7 +110,7 @@ gc run deploy "$SERVICE" --source . --region "$REGION" \
   --service-account "$SA_EMAIL" \
   --add-cloudsql-instances "$connection_name" \
   --set-secrets "$secrets" \
-  --set-env-vars "ENVIRONMENT=${ENVIRONMENT:-demo},GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},LLM_CONTENT_LOGGING=${LLM_CONTENT_LOGGING}" \
+  --set-env-vars "$env_vars" \
   --min-instances 1 --max-instances 1 --no-cpu-throttling \
   --cpu 1 --memory 1Gi --timeout 3600 \
   --allow-unauthenticated

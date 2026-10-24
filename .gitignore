@@ -25,3 +25,6 @@ frontend/dist/
 
 # Logfire CLI credentials
 .logfire/
+
+# Eval transcripts: regenerated on every run, read by hand.
+backend/evals/results/transcripts/
