@@ -1,0 +1,39 @@
+name: candidate-screening-agent
+
+services:
+  db:
+    # Same major version as the Cloud SQL instance, so local and deployed behave alike.
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: screening
+      POSTGRES_PASSWORD: screening
+      POSTGRES_DB: screening
+    ports:
+      # A non-default host port so it never collides with other local Postgres instances.
+      - "${DB_HOST_PORT:-55432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U screening -d screening"]
+      interval: 2s
+      retries: 15
+
+  # The production image, run locally to check the build before deploying: `docker compose --profile app up`.
+  app:
+    profiles: [app]
+    build: .
+    # Optional: e.g. an LLM API key and LOGFIRE_TOKEN. The values under `environment` take precedence.
+    env_file:
+      - path: backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://screening:screening@db:5432/screening
+      ENVIRONMENT: local-container
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

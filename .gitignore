@@ -2,3 +2,27 @@
 .memsearch
 .notes
 .vscode
+.idea
+.DS_Store
+
+# Secrets and per-machine environment
+.env
+.env.*
+!.env.example
+deploy.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Logfire CLI credentials
+.logfire/

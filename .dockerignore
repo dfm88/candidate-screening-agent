@@ -1,0 +1,15 @@
+.git
+.notes
+.memsearch
+.vscode
+.idea
+**/.env
+**/.env.*
+deploy.env
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.logfire

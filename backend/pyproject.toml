@@ -1,0 +1,39 @@
+[project]
+name = "candidate-screening-agent"
+version = "0.1.0"
+description = "AI screening agent for delivery-driver applicants, with a recruiter tool."
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.20",
+    "asyncpg>=0.32",
+    "fastapi>=0.162",
+    "logfire[fastapi,sqlalchemy]>=5.3",
+    "pydantic-settings>=2.16",
+    # <2.1 because opentelemetry-instrumentation-sqlalchemy (behind logfire) only supports <2.1 so far.
+    "sqlalchemy[asyncio]>=2.0.55,<2.1",
+    "uvicorn[standard]>=0.54",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pytest>=8.4",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.4,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "screening"
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
