@@ -1,8 +1,6 @@
-"""Screening domain: from what the candidate said to what happens next, deterministically.
+"""The screening facts code owns: what we store, service areas, dates in the restaurant's time zone, and the outcome.
 
-The LLM fills a `TurnExtraction` with what the new messages *say*. `decide` validates it against the client
-config, applies the 2-try policy, knockouts and review reasons (⚑), and returns the acts for the reply.
-No model output sets a status or an outcome. Names follow docs/process-design.md.
+The conversation itself is the agent's job (agent.py and prompts/). Names follow docs/process-design.md.
 """
 
 import re
@@ -13,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from screening.config import ClientConfig, Country, Language, Locale, Location
+from screening.config import ClientConfig, Country, Language, Location
 
 # --- Vocabulary -------------------------------------------------------------------------------------------
 
@@ -43,17 +41,14 @@ class FieldName(StrEnum):
     START_DATE = "start_date"
 
 
+# The order the agent asks in: knockouts first.
 FIELD_ORDER = tuple(FieldName)
-KNOCKOUTS = frozenset({FieldName.LICENSE, FieldName.SERVICE_AREA})
-REQUIRED = KNOCKOUTS | {FieldName.FULL_NAME}
+REQUIRED = frozenset({FieldName.FULL_NAME, FieldName.LICENSE, FieldName.SERVICE_AREA})
 
 
-class FieldStatus(StrEnum):
-    MISSING = "missing"
-    VALID = "valid"
-    UNCLEAR = "unclear"
-    # Still unclear after the last try: a ⚑ for required fields, a gap for the others.
-    UNRESOLVED = "unresolved"
+class LicenseAnswer(StrEnum):
+    YES = "yes"
+    NO = "no"
 
 
 class Availability(StrEnum):
@@ -69,37 +64,31 @@ class Schedule(StrEnum):
     FLEXIBLE = "flexible"
 
 
-class ReviewReason(StrEnum):
-    UNRESOLVED_FIELD = "unresolved_field"
-    HUMAN_REQUESTED = "human_requested"
-    KNOCKOUT_CHANGED = "knockout_changed"
-    CONVERSATION_ENDED = "conversation_ended"
-
-
 class NotQualifiedReason(StrEnum):
     NO_LICENSE = "no_license"
     OUTSIDE_SERVICE_AREA = "outside_service_area"
 
 
-class Flag(BaseModel):
-    """A review reason (⚑)."""
-
-    reason: ReviewReason
-    field: FieldName | None = None
-    detail: str | None = None
+class ReviewReason(StrEnum):
+    HUMAN_REQUESTED = "human_requested"
+    KNOCKOUT_CHANGED = "knockout_changed"
+    CONDUCT = "conduct"
 
 
-# --- Status transitions -----------------------------------------------------------------------------------
+class EndReason(StrEnum):
+    NOT_INTERESTED = "not_interested"
+    WRONG_PERSON = "wrong_person"
+    CONDUCT = "conduct"
+
 
 _TRANSITIONS: dict[Status, frozenset[Status]] = {
     Status.PENDING: frozenset({Status.INVITED, Status.IN_PROGRESS}),
     Status.INVITED: frozenset({Status.IN_PROGRESS, Status.ABANDONED, Status.WITHDRAWN}),
     Status.IN_PROGRESS: frozenset({Status.COMPLETED, Status.ABANDONED, Status.WITHDRAWN}),
     Status.ABANDONED: frozenset({Status.IN_PROGRESS, Status.WITHDRAWN}),
-    # Reopened when a candidate corrects a knockout answer after hearing it disqualifies.
-    Status.COMPLETED: frozenset({Status.IN_PROGRESS}),
-    # A withdrawn candidate who writes again of their own accord can resume.
-    Status.WITHDRAWN: frozenset({Status.IN_PROGRESS}),
+    # Reopened when a candidate corrects a knockout answer after hearing it disqualifies; or withdraws later.
+    Status.COMPLETED: frozenset({Status.IN_PROGRESS, Status.WITHDRAWN}),
+    Status.WITHDRAWN: frozenset(),
 }
 
 
@@ -109,21 +98,15 @@ def transition(current: Status, new: Status) -> Status:
     return new
 
 
-# --- What the candidate said (the extractor's output) -----------------------------------------------------
-
-
-class LicenseAnswer(StrEnum):
-    YES = "yes"
-    NO = "no"
-    UNCLEAR = "unclear"
+# --- What the agent saves -----------------------------------------------------------------------------------
 
 
 class StartDateSpec(BaseModel):
-    """The start date as the candidate expressed it; code turns it into a date in the restaurant's time zone."""
+    """The start date as the candidate said it. Code turns it into a date in the restaurant's time zone."""
 
-    kind: Literal["date", "in", "weekday", "asap", "unclear"] = Field(
-        description="date: a calendar date; in: N days/weeks/months from now; weekday: next given weekday; "
-        "asap: immediately; unclear: no usable date."
+    kind: Literal["asap", "date", "in", "weekday"] = Field(
+        description="asap: right away; date: a calendar date; in: N days/weeks/months from today; "
+        "weekday: the next given weekday."
     )
     calendar_date: date | None = Field(default=None, description="For kind=date.")
     amount: int | None = Field(default=None, ge=0, description="For kind=in.")
@@ -131,76 +114,38 @@ class StartDateSpec(BaseModel):
     weekday: int | None = Field(default=None, ge=0, le=6, description="For kind=weekday: 0=Monday … 6=Sunday.")
 
 
-class TurnExtraction(BaseModel):
-    """What the candidate's new messages say. Only explicit statements; leave anything not said as null."""
+class NewAnswers(BaseModel):
+    """Answers the candidate gave. Only what they said explicitly; leave everything else out."""
 
-    wants_to_start: bool = Field(default=False, description="Agrees to start the screening.")
-    confirms_name: bool | None = Field(default=None, description="Answer to 'is your full name X?'.")
-    full_name: str | None = Field(default=None, description="Full name as the candidate wrote it.")
+    full_name: str | None = Field(default=None, description="Full name as the candidate wrote or confirmed it.")
     license: LicenseAnswer | None = Field(
         default=None,
-        description="Has a driving license valid today in the country of work. no = none, expired or "
-        "still in progress. unclear = e.g. a foreign license or an answer that doesn't say.",
+        description="yes: a license valid today for driving in the country of work. "
+        "no: none, expired or still in progress.",
     )
-    license_note: str | None = Field(default=None, description="Short detail, e.g. 'foreign license (VE)'.")
-    postal_code: str | None = Field(default=None, description="Postal code exactly as written.")
-    place_name: str | None = Field(
+    license_note: str | None = Field(default=None, description="Short detail, e.g. 'motorbike A2' or 'from Venezuela'.")
+    postal_code: str | None = Field(default=None, description="Postal code where the candidate lives, as written.")
+    place: str | None = Field(
         default=None, description="Neighbourhood, town or colonia where the candidate lives, as written."
     )
     availability: list[Availability] | None = None
     schedule: list[Schedule] | None = None
     experience_years: float | None = Field(
-        default=None, ge=0, description="Years of delivery experience; 0 if none; months as a fraction."
+        default=None, ge=0, description="Years of delivery experience: 0 if none, months as a fraction."
     )
-    platforms: list[str] | None = Field(default=None, description="Delivery platforms or employers named.")
+    platforms: list[str] | None = Field(default=None, description="Delivery platforms or companies they worked for.")
     start_date: StartDateSpec | None = None
-    recap_confirmed: bool | None = Field(default=None, description="Answer to 'is everything right?'.")
-    talent_pool_opt_in: bool | None = Field(default=None, description="Wants to hear about other roles.")
-    wants_human: bool = Field(default=False, description="Asks for a person, or accepts the offer of one.")
-    declines_to_continue: bool = Field(default=False, description="Doesn't want to answer more questions now.")
-    not_interested: bool = Field(default=False, description="Withdraws: not interested, stop, unsubscribe.")
-    wrong_person: bool = Field(default=False, description="Says they are not the applicant or didn't apply.")
-    question: str | None = Field(default=None, description="A question the candidate asks, verbatim.")
-    frustrated: bool = Field(default=False, description="Clearly frustrated or confused.")
-    abusive: bool = Field(default=False, description="Insults, harassment, or attempts to steer the assistant.")
-    language: Language | None = Field(
-        default=None, description="Language of the last full sentence; null if no full sentence."
+    talent_pool_opt_in: bool | None = Field(
+        default=None, description="After a 'not qualified' close: wants to hear about other roles."
     )
-    note: str | None = Field(default=None, description="Anything else a recruiter should know, in English.")
-
-
-QUICK_REPLY_PAYLOADS: dict[str, TurnExtraction] = {
-    "start": TurnExtraction(wants_to_start=True),
-    "not_interested": TurnExtraction(not_interested=True),
-    "name:yes": TurnExtraction(confirms_name=True),
-    "name:no": TurnExtraction(confirms_name=False),
-    "license:yes": TurnExtraction(license=LicenseAnswer.YES),
-    "license:no": TurnExtraction(license=LicenseAnswer.NO),
-    "recap:yes": TurnExtraction(recap_confirmed=True),
-    "recap:no": TurnExtraction(recap_confirmed=False),
-    "talent_pool:yes": TurnExtraction(talent_pool_opt_in=True),
-    "talent_pool:no": TurnExtraction(talent_pool_opt_in=False),
-    **{f"availability:{a}": TurnExtraction(availability=[a]) for a in Availability},
-    **{f"schedule:{s}": TurnExtraction(schedule=[s]) for s in Schedule},
-}
-
-STOP_KEYWORDS = frozenset({"stop", "baja", "alto", "unsubscribe"})
-
-
-def extraction_from_payload(payload: str) -> TurnExtraction | None:
-    """A tapped quick reply maps to its meaning without the LLM."""
-    return QUICK_REPLY_PAYLOADS.get(payload)
-
-
-def is_stop_keyword(text: str) -> bool:
-    return _normalize(text) in STOP_KEYWORDS
-
-
-# --- What we know ------------------------------------------------------------------------------------------
+    candidate_language: Language | None = Field(
+        default=None, description="Only when the candidate switches language: the language they now write in."
+    )
 
 
 class AreaMatch(BaseModel):
-    location_id: str
+    # None: the postal code is outside every service area (a knockout).
+    location_id: str | None
     postal_code: str | None = None
     place: str | None = None
 
@@ -209,10 +154,14 @@ class Experience(BaseModel):
     years: float | None = None
     platforms: list[str] | None = None
 
+    @property
+    def complete(self) -> bool:
+        return self.years == 0 or (self.years is not None and self.platforms is not None)
+
 
 class Answers(BaseModel):
     full_name: str | None = None
-    has_license: bool | None = None
+    license: LicenseAnswer | None = None
     license_note: str | None = None
     area: AreaMatch | None = None
     availability: list[Availability] = []
@@ -221,17 +170,11 @@ class Answers(BaseModel):
     start_date: date | None = None
 
 
-class FieldState(BaseModel):
-    status: FieldStatus = FieldStatus.MISSING
-    tries: int = 0
+class ReviewFlag(BaseModel):
+    """A review reason (⚑) recorded during the conversation. Unclear required fields are review reasons too."""
 
-
-class Awaiting(StrEnum):
-    START = "start"
-    FIELD = "field"
-    RECAP = "recap"
-    TALENT_POOL = "talent_pool"
-    NOTHING = "nothing"
+    reason: ReviewReason
+    detail: str | None = None
 
 
 class Application(BaseModel):
@@ -239,6 +182,7 @@ class Application(BaseModel):
 
     full_name: str
     vacancy_location_id: str
+    language: Language
 
     @property
     def first_name(self) -> str:
@@ -248,105 +192,268 @@ class Application(BaseModel):
 class ScreeningState(BaseModel):
     status: Status = Status.PENDING
     outcome: Outcome | None = None
-    not_qualified_reason: NotQualifiedReason | None = None
     language: Language
     answers: Answers = Field(default_factory=Answers)
-    fields: dict[FieldName, FieldState] = Field(default_factory=lambda: {f: FieldState() for f in FieldName})
-    awaiting: Awaiting = Awaiting.START
-    asking: FieldName | None = None
-    flags: list[Flag] = []
-    talent_pool_opt_in: bool | None = None
-    human_requested: bool = False
-    frustration_offered: bool = False
-    simplify: bool = False
-    abuse_strikes: int = 0
+    # Fields the agent gave up on after two tries, with its note on why.
+    unclear: dict[FieldName, str] = {}
+    flags: list[ReviewFlag] = []
     open_questions: list[str] = []
-    notes: list[str] = []
+    talent_pool_opt_in: bool | None = None
 
-    def is_resolved(self, name: FieldName) -> bool:
-        return self.fields[name].status in (FieldStatus.VALID, FieldStatus.UNRESOLVED)
+    def is_saved(self, field: FieldName) -> bool:
+        answers = self.answers
+        match field:
+            case FieldName.FULL_NAME:
+                return answers.full_name is not None
+            case FieldName.LICENSE:
+                return answers.license is not None
+            case FieldName.SERVICE_AREA:
+                return answers.area is not None
+            case FieldName.AVAILABILITY:
+                return bool(answers.availability)
+            case FieldName.SCHEDULE:
+                return bool(answers.schedule)
+            case FieldName.EXPERIENCE:
+                return answers.experience is not None and answers.experience.complete
+            case FieldName.START_DATE:
+                return answers.start_date is not None
+
+    @property
+    def still_to_ask(self) -> list[FieldName]:
+        return [field for field in FIELD_ORDER if not self.is_saved(field) and field not in self.unclear]
+
+    @property
+    def knockout(self) -> NotQualifiedReason | None:
+        if self.answers.license is LicenseAnswer.NO:
+            return NotQualifiedReason.NO_LICENSE
+        if self.answers.area is not None and self.answers.area.location_id is None:
+            return NotQualifiedReason.OUTSIDE_SERVICE_AREA
+        return None
 
     @property
     def gaps(self) -> list[FieldName]:
-        return [f for f in FIELD_ORDER if f not in REQUIRED and self.fields[f].status is FieldStatus.UNRESOLVED]
+        return [field for field in self.unclear if field not in REQUIRED]
 
 
-# --- What to say next ----------------------------------------------------------------------------------
+def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldName, str]:
+    """Saved answers as short readable values, for the agent's context and for tool results."""
+    answers = state.answers
+    described: dict[FieldName, str] = {}
+    if answers.full_name:
+        described[FieldName.FULL_NAME] = answers.full_name
+    if answers.license:
+        note = f" ({answers.license_note})" if answers.license_note else ""
+        described[FieldName.LICENSE] = f"{answers.license}{note}"
+    if answers.area:
+        where = answers.area.postal_code or answers.area.place
+        if answers.area.location_id is None:
+            described[FieldName.SERVICE_AREA] = f"outside every service area ({where})"
+        else:
+            described[FieldName.SERVICE_AREA] = f"{config.locations_by_id[answers.area.location_id].name} ({where})"
+    if answers.availability:
+        described[FieldName.AVAILABILITY] = ", ".join(answers.availability)
+    if answers.schedule:
+        described[FieldName.SCHEDULE] = ", ".join(answers.schedule)
+    if answers.experience:
+        years = "years unknown" if answers.experience.years is None else f"{answers.experience.years:g} years"
+        platforms = answers.experience.platforms
+        described[FieldName.EXPERIENCE] = years + (f": {', '.join(platforms)}" if platforms else "")
+    if answers.start_date:
+        described[FieldName.START_DATE] = answers.start_date.strftime("%Y-%m-%d (%A)")
+    return described
 
 
-class QuickReply(BaseModel):
-    label: str
-    payload: str
+# --- Saving answers -------------------------------------------------------------------------------------------
 
 
-class ResponderAct(BaseModel):
-    """Something the responder LLM phrases. It never decides; code chose the act."""
-
-    kind: Literal["ask", "ask_correction", "answer", "handoff", "offer_human", "redirect", "resume", "closed"]
-    field: FieldName | None = None
-    attempt: int = 1
-    question: str | None = None
+class SaveResult(BaseModel):
+    saved: dict[FieldName, str]
+    not_saved: dict[FieldName, str] = Field(description="Why each answer wasn't saved, and what to ask instead.")
+    knockout: str | None = Field(description="Set when the candidate doesn't qualify: call finish_screening.")
+    still_to_ask: list[FieldName]
 
 
-class Decision(BaseModel):
-    state: ScreeningState
-    locale: Locale
-    acts: list[ResponderAct] = []
-    # Fixed messages, already rendered; sent after the responder's bubbles.
-    template_bubbles: list[str] = []
-    quick_replies: list[QuickReply] = []
+def save_answers(
+    state: ScreeningState, new: NewAnswers, application: Application, config: ClientConfig, now: datetime
+) -> tuple[ScreeningState, SaveResult]:
+    """Validate what we own (service areas, dates), save the answers and report back to the agent."""
+    state = state.model_copy(deep=True)
+    answers = state.answers
+    vacancy = config.locations_by_id[application.vacancy_location_id]
+    knockout_before = state.knockout
+    touched: set[FieldName] = set()
+    not_saved: dict[FieldName, str] = {}
+
+    if new.full_name:
+        answers.full_name = new.full_name.strip()
+        touched.add(FieldName.FULL_NAME)
+
+    if new.license is not None:
+        answers.license = new.license
+        answers.license_note = new.license_note or answers.license_note
+        touched.add(FieldName.LICENSE)
+
+    if new.postal_code:
+        code = re.sub(r"\D", "", new.postal_code)
+        if len(code) != 5:
+            not_saved[FieldName.SERVICE_AREA] = f"{new.postal_code!r} is not a 5-digit postal code: ask again"
+        else:
+            # Spain and Mexico both use 5-digit codes: read the code in the vacancy's country.
+            location = match_postal_code(code, config, vacancy.country, preferred=vacancy.id)
+            answers.area = AreaMatch(location_id=location.id if location else None, postal_code=code, place=new.place)
+            touched.add(FieldName.SERVICE_AREA)
+    elif new.place:
+        locations = lookup_place(new.place, config, vacancy.country)
+        if len(locations) == 1:
+            answers.area = AreaMatch(location_id=locations[0].id, place=new.place)
+            touched.add(FieldName.SERVICE_AREA)
+        elif locations:
+            names = ", ".join(location.name for location in locations)
+            not_saved[FieldName.SERVICE_AREA] = (
+                f"{new.place!r} matches several areas ({names}): ask for the postal code"
+            )
+        else:
+            # An unknown place isn't a "no": only the postal code can tell.
+            not_saved[FieldName.SERVICE_AREA] = f"{new.place!r} isn't a place we know: ask for the postal code"
+
+    if new.availability:
+        answers.availability = list(dict.fromkeys(new.availability))
+        touched.add(FieldName.AVAILABILITY)
+
+    if new.schedule:
+        answers.schedule = list(dict.fromkeys(new.schedule))
+        touched.add(FieldName.SCHEDULE)
+
+    if new.experience_years is not None or new.platforms is not None:
+        current = answers.experience or Experience()
+        answers.experience = Experience(
+            years=new.experience_years if new.experience_years is not None else current.years,
+            platforms=normalize_platforms(new.platforms, config) if new.platforms is not None else current.platforms,
+        )
+        touched.add(FieldName.EXPERIENCE)
+        if not answers.experience.complete:
+            missing = "the platforms or companies" if answers.experience.years else "how many years"
+            not_saved[FieldName.EXPERIENCE] = f"partly saved: also ask {missing}"
+
+    if new.start_date:
+        today = now.astimezone(vacancy.tz).date()
+        resolved = resolve_start_date(new.start_date, today)
+        if resolved is None:
+            not_saved[FieldName.START_DATE] = "that isn't a usable date: ask for an approximate date"
+        else:
+            answers.start_date = resolved
+            touched.add(FieldName.START_DATE)
+
+    if new.talent_pool_opt_in is not None:
+        state.talent_pool_opt_in = new.talent_pool_opt_in
+    if new.candidate_language is not None:
+        state.language = new.candidate_language
+    for field in touched:
+        state.unclear.pop(field, None)
+
+    # A knockout answer that changes after the outcome was given goes to a person.
+    knockout_after = state.knockout
+    if state.status is Status.COMPLETED and knockout_after != knockout_before:
+        state.flags.append(ReviewFlag(reason=ReviewReason.KNOCKOUT_CHANGED, detail=f"was {knockout_before or 'none'}"))
+        if knockout_after is None:  # no longer disqualified: reopen and collect the rest
+            state.status = transition(state.status, Status.IN_PROGRESS)
+            state.outcome = None
+        else:
+            state.outcome = Outcome.NEEDS_HUMAN_REVIEW
+
+    described = describe_saved(state, config)
+    return state, SaveResult(
+        saved={field: described[field] for field in touched if field in described},
+        not_saved=not_saved,
+        knockout=f"{knockout_after}: the candidate doesn't qualify, call finish_screening" if knockout_after else None,
+        still_to_ask=state.still_to_ask,
+    )
 
 
-# --- Validation helpers ---------------------------------------------------------------------------------------
+# --- The outcome ------------------------------------------------------------------------------------------------
+
+
+def compute_outcome(state: ScreeningState) -> tuple[Outcome, list[str]]:
+    """A knockout "no" → not qualified; an unclear required field or a review flag → review; else qualified."""
+    if state.knockout:
+        return Outcome.NOT_QUALIFIED, [state.knockout]
+    reasons = [f"{field} unclear: {note}" for field, note in state.unclear.items() if field in REQUIRED]
+    reasons += [f"{flag.reason}: {flag.detail}" if flag.detail else flag.reason for flag in state.flags]
+    return (Outcome.NEEDS_HUMAN_REVIEW if reasons else Outcome.QUALIFIED), reasons
+
+
+class FinishResult(BaseModel):
+    finished: bool
+    outcome: Outcome | None
+    reasons: list[str] = []
+    gaps: list[FieldName] = Field(default=[], description="Optional fields left unclear: noted for the recruiter.")
+    still_to_ask: list[FieldName] = Field(default=[], description="Ask these before finishing.")
+
+
+def finish_screening(state: ScreeningState) -> tuple[ScreeningState, FinishResult]:
+    state = state.model_copy(deep=True)
+    if state.status is Status.COMPLETED:
+        _, reasons = compute_outcome(state)
+        return state, FinishResult(finished=True, outcome=state.outcome, reasons=reasons, gaps=state.gaps)
+    # Code owns completeness: the agent can't close early unless a knockout already decided it, or the
+    # candidate asked for a person (who then gets the partial screening).
+    asked_for_person = any(flag.reason is ReviewReason.HUMAN_REQUESTED for flag in state.flags)
+    if state.knockout is None and not asked_for_person and state.still_to_ask:
+        return state, FinishResult(finished=False, outcome=None, still_to_ask=state.still_to_ask)
+    outcome, reasons = compute_outcome(state)
+    state.status = transition(state.status, Status.COMPLETED)
+    state.outcome = outcome
+    return state, FinishResult(finished=True, outcome=outcome, reasons=reasons, gaps=state.gaps)
+
+
+# --- Lookups ---------------------------------------------------------------------------------------------------
 
 _PLACE_PREFIXES = ("colonia ", "col ", "barrio ", "barri ", "fraccionamiento ")
 
 
 def _normalize(text: str) -> str:
-    stripped = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9]+", " ", stripped.casefold()).strip()
-
-
-def locations_in(config: ClientConfig, country: Country) -> list[Location]:
-    return [loc for loc in config.locations if loc.country is country]
+    without_accents = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", without_accents.casefold()).strip()
 
 
 def match_postal_code(code: str, config: ClientConfig, country: Country, preferred: str) -> Location | None:
-    """The restaurant whose area contains `code`, read in the vacancy's country (ES and MX both use 5 digits)."""
+    """The restaurant whose area contains `code`: the applied-to one if it serves it, else the longest prefix."""
     matches = [
-        (loc, len(prefix))
-        for loc in locations_in(config, country)
-        for prefix in loc.postal_prefixes
+        (location, len(prefix))
+        for location in config.locations
+        if location.country is country
+        for prefix in location.postal_prefixes
         if code.startswith(prefix)
     ]
     if not matches:
         return None
-    for loc, _ in matches:
-        if loc.id == preferred:
-            return loc
-    return max(matches, key=lambda m: m[1])[0]
+    preferred_match = next((location for location, _ in matches if location.id == preferred), None)
+    return preferred_match or max(matches, key=lambda match: match[1])[0]
 
 
 def lookup_place(name: str, config: ClientConfig, country: Country) -> list[Location]:
-    """Restaurants whose area contains a place with this name; more than one means 'ask for the postal code'."""
+    """Restaurants with a place of this name in their area. More than one means: ask for the postal code."""
     wanted = _normalize(name)
     for prefix in _PLACE_PREFIXES:
-        if wanted.startswith(prefix):
-            wanted = wanted.removeprefix(prefix)
-    found = [loc for loc in locations_in(config, country) if any(_normalize(place) == wanted for place in loc.places)]
-    return list({loc.id: loc for loc in found}.values())
+        wanted = wanted.removeprefix(prefix)
+    return [
+        location
+        for location in config.locations
+        if location.country is country and any(_normalize(place) == wanted for place in location.places)
+    ]
 
 
 def normalize_platforms(names: list[str], config: ClientConfig) -> list[str]:
+    """Known platforms get their canonical name; anything else is kept as given."""
     canonical: list[str] = []
     for name in names:
         key = _normalize(name)
-        match = next(
-            (canon for canon, aliases in config.platforms.items() if key in {_normalize(a) for a in aliases}),
+        known = next(
+            (platform for platform, aliases in config.platforms.items() if key in {_normalize(a) for a in aliases}),
             name.strip(),
         )
-        if match not in canonical:
-            canonical.append(match)
+        if known not in canonical:
+            canonical.append(known)
     return canonical
 
 
@@ -362,422 +469,8 @@ def resolve_start_date(spec: StartDateSpec, today: date) -> date | None:
             next_year = spec.calendar_date.replace(year=spec.calendar_date.year + 1)
             return next_year if next_year >= today else None
         case "in" if spec.amount is not None and spec.unit is not None:
-            days = {"days": 1, "weeks": 7, "months": 30}[spec.unit]
-            return today + timedelta(days=spec.amount * days)
+            return today + timedelta(days=spec.amount * {"days": 1, "weeks": 7, "months": 30}[spec.unit])
         case "weekday" if spec.weekday is not None:
             # The next such weekday, never today: "el lunes" said on a Monday means next Monday.
-            ahead = (spec.weekday - today.weekday() - 1) % 7 + 1
-            return today + timedelta(days=ahead)
+            return today + timedelta(days=(spec.weekday - today.weekday() - 1) % 7 + 1)
     return None
-
-
-# --- The rules ---------------------------------------------------------------------------------------------
-
-
-class _Turn:
-    """Collects the reply for one turn while the rules run."""
-
-    def __init__(self, state: ScreeningState, app: Application, config: ClientConfig, now: datetime) -> None:
-        self.s = state
-        self.app = app
-        self.config = config
-        self.location = config.locations_by_id[app.vacancy_location_id]
-        self.today = now.astimezone(self.location.tz).date()
-        self.acts: list[ResponderAct] = []
-        self.bubbles: list[str] = []
-        self.quick_replies: list[QuickReply] = []
-
-    @property
-    def locale(self) -> Locale:
-        return Locale.of(self.s.language, self.location.country)
-
-    def template(self, key: str, **params: str) -> None:
-        defaults = {"first_name": self.app.first_name, "full_name": self.app.full_name, "city": self.location.city}
-        self.bubbles += self.config.render(key, self.locale, **(defaults | params))
-
-    def options(self, *pairs: tuple[str, str]) -> None:
-        self.quick_replies = [QuickReply(label=self.config.label(self.locale, k), payload=p) for k, p in pairs]
-
-    def decision(self) -> Decision:
-        return Decision(
-            state=self.s,
-            locale=self.locale,
-            acts=self.acts,
-            template_bubbles=self.bubbles,
-            quick_replies=self.quick_replies,
-        )
-
-
-def decide(
-    state: ScreeningState, app: Application, ex: TurnExtraction, now: datetime, config: ClientConfig
-) -> Decision:
-    """Apply one batch of candidate messages to the screening and choose the reply."""
-    t = _Turn(state.model_copy(deep=True), app, config, now)
-    s = t.s
-    if ex.language is not None:
-        s.language = ex.language
-    if ex.note:
-        s.notes.append(ex.note)
-
-    if ex.wrong_person or ex.not_interested:
-        if s.status is not Status.WITHDRAWN:
-            s.status = transition(s.status, Status.WITHDRAWN)
-        s.awaiting = Awaiting.NOTHING
-        t.template("wrong_person" if ex.wrong_person else "withdrawn")
-        return t.decision()
-
-    if s.status is Status.COMPLETED:
-        return _after_close(t, ex)
-
-    # Never started (even if it went silent or withdrew first): the intro carries the AI disclosure.
-    if s.awaiting is Awaiting.START:
-        # Without a first message from us (the candidate came through the link), the intro introduces us.
-        direct = s.status is Status.PENDING
-        s.status = transition(s.status, Status.IN_PROGRESS)
-        _apply_answers(t, ex)
-        _answer_side_requests(t, ex)
-        s.awaiting, s.asking = Awaiting.FIELD, FieldName.FULL_NAME
-        t.template("intro_direct" if direct else "intro")
-        t.options(("yes", "name:yes"), ("no", "name:no"))
-        return t.decision()
-
-    if s.status in (Status.ABANDONED, Status.WITHDRAWN):
-        s.status = transition(s.status, Status.IN_PROGRESS)
-        t.acts.append(ResponderAct(kind="resume"))
-
-    return _in_progress(t, ex)
-
-
-def _in_progress(t: _Turn, ex: TurnExtraction) -> Decision:
-    s = t.s
-    if ex.abusive:
-        s.abuse_strikes += 1
-        if s.abuse_strikes >= 2:
-            s.flags.append(Flag(reason=ReviewReason.CONVERSATION_ENDED))
-            _complete(t, Outcome.NEEDS_HUMAN_REVIEW, template="close_ended")
-            return t.decision()
-        t.acts.append(ResponderAct(kind="redirect"))
-
-    _answer_side_requests(t, ex)
-    if ex.declines_to_continue and s.human_requested:
-        _complete(t, Outcome.NEEDS_HUMAN_REVIEW, template="close_review")
-        return t.decision()
-
-    touched = _apply_answers(t, ex)
-    if s.not_qualified_reason is not None:
-        _close_not_qualified(t)
-        return t.decision()
-
-    if s.awaiting is Awaiting.RECAP:
-        if touched:
-            _send_recap(t)
-        elif ex.recap_confirmed:
-            _finalize(t)
-        elif ex.recap_confirmed is False:
-            t.acts.append(ResponderAct(kind="ask_correction"))
-        else:
-            t.options(("recap_ok", "recap:yes"), ("recap_fix", "recap:no"))
-        return t.decision()
-
-    if s.asking is not None and s.asking not in touched:
-        _count_silent_try(t, ex)
-    _ask_next(t)
-    return t.decision()
-
-
-def _answer_side_requests(t: _Turn, ex: TurnExtraction) -> None:
-    """Questions, requests for a person and frustration are handled alongside the screening, not instead of it."""
-    s = t.s
-    if ex.question:
-        s.open_questions.append(ex.question)
-        t.acts.append(ResponderAct(kind="answer", question=ex.question))
-    if ex.frustrated:
-        s.simplify = True
-        if not s.frustration_offered and not s.human_requested:
-            s.frustration_offered = True
-            t.acts.append(ResponderAct(kind="offer_human"))
-    if ex.wants_human and not s.human_requested:
-        s.human_requested = True
-        s.flags.append(Flag(reason=ReviewReason.HUMAN_REQUESTED))
-        t.acts.append(ResponderAct(kind="handoff"))
-
-
-def _count_silent_try(t: _Turn, ex: TurnExtraction) -> None:
-    """The asked field wasn't answered. Only a reply that says nothing else counts as a failed try."""
-    s = t.s
-    field = s.asking
-    assert field is not None
-    state = s.fields[field]
-    # A single-word name is accepted once the candidate has been asked for the surname: mononyms exist.
-    if field is FieldName.FULL_NAME and s.answers.full_name and state.tries >= 1:
-        state.status = FieldStatus.VALID
-        return
-    said_something_else = bool(t.acts) or ex.question or ex.wants_human or ex.frustrated or ex.abusive
-    if not said_something_else:
-        _fail_try(t, field)
-
-
-def _fail_try(t: _Turn, field: FieldName, detail: str | None = None) -> None:
-    state = t.s.fields[field]
-    state.tries += 1
-    if state.tries < t.config.max_tries:
-        state.status = FieldStatus.UNCLEAR
-        return
-    state.status = FieldStatus.UNRESOLVED
-    if field in REQUIRED:
-        t.s.flags.append(Flag(reason=ReviewReason.UNRESOLVED_FIELD, field=field, detail=detail))
-
-
-def _valid(t: _Turn, field: FieldName) -> None:
-    t.s.fields[field].status = FieldStatus.VALID
-
-
-def _apply_answers(t: _Turn, ex: TurnExtraction) -> set[FieldName]:
-    """Validate every field the messages mention, in any order. Returns the fields touched."""
-    s, a, touched = t.s, t.s.answers, set[FieldName]()
-
-    if ex.full_name or ex.confirms_name is not None:
-        touched.add(FieldName.FULL_NAME)
-        name = (ex.full_name or (t.app.full_name if ex.confirms_name else "")).strip()
-        if not name:
-            _fail_try(t, FieldName.FULL_NAME)
-        else:
-            a.full_name = name
-            if len(name.split()) == 1 and s.fields[FieldName.FULL_NAME].tries == 0:
-                _fail_try(t, FieldName.FULL_NAME)  # ask once for the surname(s)
-            else:
-                _valid(t, FieldName.FULL_NAME)
-
-    if ex.license is not None:
-        touched.add(FieldName.LICENSE)
-        a.license_note = ex.license_note or a.license_note
-        if ex.license is LicenseAnswer.UNCLEAR:
-            _fail_try(t, FieldName.LICENSE, detail=ex.license_note)
-        else:
-            had_no = a.has_license is False
-            a.has_license = ex.license is LicenseAnswer.YES
-            _valid(t, FieldName.LICENSE)
-            if not a.has_license:
-                s.not_qualified_reason = NotQualifiedReason.NO_LICENSE
-            elif had_no:
-                _knockout_changed(t, FieldName.LICENSE)
-
-    if ex.postal_code or ex.place_name:
-        touched.add(FieldName.SERVICE_AREA)
-        _apply_area(t, ex)
-
-    if ex.availability:
-        touched.add(FieldName.AVAILABILITY)
-        a.availability = list(dict.fromkeys(ex.availability))
-        _valid(t, FieldName.AVAILABILITY)
-
-    if ex.schedule:
-        touched.add(FieldName.SCHEDULE)
-        a.schedule = list(dict.fromkeys(ex.schedule))
-        _valid(t, FieldName.SCHEDULE)
-
-    if ex.experience_years is not None or ex.platforms is not None:
-        touched.add(FieldName.EXPERIENCE)
-        _apply_experience(t, ex)
-
-    if ex.start_date is not None:
-        touched.add(FieldName.START_DATE)
-        resolved = resolve_start_date(ex.start_date, t.today)
-        if resolved is None:
-            _fail_try(t, FieldName.START_DATE)
-        else:
-            a.start_date = resolved
-            _valid(t, FieldName.START_DATE)
-
-    if ex.talent_pool_opt_in is not None:
-        s.talent_pool_opt_in = ex.talent_pool_opt_in
-    return touched
-
-
-def _apply_area(t: _Turn, ex: TurnExtraction) -> None:
-    s, a = t.s, t.s.answers
-    country, preferred = t.location.country, t.location.id
-    if ex.postal_code:
-        code = re.sub(r"\D", "", ex.postal_code)
-        if len(code) != 5:
-            _fail_try(t, FieldName.SERVICE_AREA)
-            return
-        matched = match_postal_code(code, t.config, country, preferred)
-        if matched is None:
-            a.area = None
-            _valid(t, FieldName.SERVICE_AREA)
-            s.not_qualified_reason = NotQualifiedReason.OUTSIDE_SERVICE_AREA
-            return
-        was_outside = s.not_qualified_reason is NotQualifiedReason.OUTSIDE_SERVICE_AREA
-        a.area = AreaMatch(location_id=matched.id, postal_code=code, place=ex.place_name)
-        _valid(t, FieldName.SERVICE_AREA)
-        if was_outside:
-            _knockout_changed(t, FieldName.SERVICE_AREA)
-        return
-    assert ex.place_name is not None
-    found = lookup_place(ex.place_name, t.config, country)
-    if len(found) == 1:
-        was_outside = s.not_qualified_reason is NotQualifiedReason.OUTSIDE_SERVICE_AREA
-        a.area = AreaMatch(location_id=found[0].id, place=ex.place_name)
-        _valid(t, FieldName.SERVICE_AREA)
-        if was_outside:
-            _knockout_changed(t, FieldName.SERVICE_AREA)
-    else:
-        # Unknown or ambiguous place: not a "no". The next try asks for the postal code.
-        _fail_try(t, FieldName.SERVICE_AREA, detail=ex.place_name)
-
-
-def _apply_experience(t: _Turn, ex: TurnExtraction) -> None:
-    a = t.s.answers
-    current = a.experience or Experience()
-    years = ex.experience_years if ex.experience_years is not None else current.years
-    platforms = normalize_platforms(ex.platforms, t.config) if ex.platforms is not None else current.platforms
-    a.experience = Experience(years=years, platforms=platforms)
-    if years is not None and years > 50:
-        _fail_try(t, FieldName.EXPERIENCE)
-    elif years == 0 or (years is not None and platforms is not None):
-        _valid(t, FieldName.EXPERIENCE)
-    else:
-        _fail_try(t, FieldName.EXPERIENCE)  # years or platforms still missing
-
-
-def _knockout_changed(t: _Turn, field: FieldName) -> None:
-    """A knockout answer flipped after the candidate heard it disqualifies: a person decides."""
-    s = t.s
-    s.not_qualified_reason = None
-    s.flags.append(Flag(reason=ReviewReason.KNOCKOUT_CHANGED, field=field))
-    if s.status is Status.COMPLETED:
-        s.status = transition(s.status, Status.IN_PROGRESS)
-        s.outcome = None
-        s.awaiting = Awaiting.FIELD
-
-
-def _ask_next(t: _Turn) -> None:
-    s = t.s
-    pending = next((f for f in FIELD_ORDER if not s.is_resolved(f)), None)
-    if pending is None:
-        _send_recap(t)
-        return
-    s.awaiting, s.asking = Awaiting.FIELD, pending
-    t.acts.append(ResponderAct(kind="ask", field=pending, attempt=s.fields[pending].tries + 1))
-    match pending:
-        case FieldName.FULL_NAME:
-            pass
-        case FieldName.LICENSE:
-            t.options(("yes", "license:yes"), ("no", "license:no"))
-        case FieldName.AVAILABILITY:
-            t.options(*((a.value, f"availability:{a}") for a in Availability))
-        case FieldName.SCHEDULE:
-            t.options(*((sch.value, f"schedule:{sch}") for sch in Schedule))
-
-
-def _send_recap(t: _Turn) -> None:
-    t.s.awaiting, t.s.asking = Awaiting.RECAP, None
-    t.bubbles += [render_recap(t.s, t.app, t.config, t.locale)]
-    t.options(("recap_ok", "recap:yes"), ("recap_fix", "recap:no"))
-
-
-def _finalize(t: _Turn) -> None:
-    if t.s.flags:
-        _complete(t, Outcome.NEEDS_HUMAN_REVIEW, template="close_review")
-    else:
-        _complete(t, Outcome.QUALIFIED, template="close_qualified")
-
-
-def _complete(t: _Turn, outcome: Outcome, template: str) -> None:
-    s = t.s
-    s.status = transition(s.status, Status.COMPLETED)
-    s.outcome = outcome
-    s.awaiting, s.asking = Awaiting.NOTHING, None
-    t.acts = [act for act in t.acts if act.kind == "answer"]
-    t.template(template)
-
-
-def _close_not_qualified(t: _Turn) -> None:
-    s = t.s
-    no_license = s.not_qualified_reason is NotQualifiedReason.NO_LICENSE
-    _complete(t, Outcome.NOT_QUALIFIED, template="close_not_qualified_" + ("license" if no_license else "area"))
-    s.awaiting = Awaiting.TALENT_POOL
-    t.options(("yes", "talent_pool:yes"), ("no", "talent_pool:no"))
-
-
-def _after_close(t: _Turn, ex: TurnExtraction) -> Decision:
-    """Messages after an outcome: corrections, requests for a person, the talent-pool answer, questions."""
-    s = t.s
-    if s.outcome is Outcome.NOT_QUALIFIED:
-        _apply_answers(t, ex)
-        if s.status is Status.IN_PROGRESS:  # a knockout answer changed: reopen and keep collecting
-            _answer_side_requests(t, ex)
-            _ask_next(t)
-            return t.decision()
-        if ex.wants_human:
-            s.flags.append(Flag(reason=ReviewReason.HUMAN_REQUESTED))
-            s.human_requested = True
-            s.outcome = Outcome.NEEDS_HUMAN_REVIEW
-            s.awaiting = Awaiting.NOTHING
-            t.template("close_review")
-            return t.decision()
-        if s.awaiting is Awaiting.TALENT_POOL and ex.talent_pool_opt_in is not None:
-            s.awaiting = Awaiting.NOTHING
-            t.template("talent_pool_yes" if ex.talent_pool_opt_in else "talent_pool_no")
-            return t.decision()
-    if ex.question:
-        s.open_questions.append(ex.question)
-        t.acts.append(ResponderAct(kind="answer", question=ex.question))
-    else:
-        t.acts.append(ResponderAct(kind="closed"))
-    return t.decision()
-
-
-# --- Rendering what we know ---------------------------------------------------------------------------------
-
-
-def render_recap(s: ScreeningState, app: Application, config: ClientConfig, locale: Locale) -> str:
-    a = s.answers
-
-    def label(key: str) -> str:
-        return config.label(locale, key)
-
-    def known(field: FieldName, text: str | None) -> str:
-        return text if s.fields[field].status is FieldStatus.VALID and text else label("unknown")
-
-    area = None
-    if a.area:
-        place = a.area.place or a.area.postal_code
-        area = f"{place} · {config.locations_by_id[a.area.location_id].name}"
-    return config.render(
-        "recap",
-        locale,
-        full_name=known(FieldName.FULL_NAME, a.full_name),
-        license=known(FieldName.LICENSE, label("yes") if a.has_license else None),
-        area=known(FieldName.SERVICE_AREA, area),
-        availability=known(FieldName.AVAILABILITY, ", ".join(label(x) for x in a.availability)),
-        schedule=known(FieldName.SCHEDULE, ", ".join(label(x) for x in a.schedule)),
-        experience=known(FieldName.EXPERIENCE, _format_experience(a.experience, config, locale)),
-        start_date=known(FieldName.START_DATE, _format_date(a.start_date, config, locale)),
-    )[0]
-
-
-def _format_experience(exp: Experience | None, config: ClientConfig, locale: Locale) -> str | None:
-    if exp is None or exp.years is None:
-        return None
-    if exp.years == 0:
-        return config.label(locale, "no_experience")
-    if exp.years < 1:
-        duration = config.label(locale, "months").format(n=round(exp.years * 12))
-    elif exp.years == 1:
-        duration = config.label(locale, "one_year")
-    else:
-        n = f"{exp.years:g}" if locale is Locale.EN else f"{exp.years:g}".replace(".", ",")
-        duration = config.label(locale, "years").format(n=n)
-    return f"{duration} ({', '.join(exp.platforms)})" if exp.platforms else duration
-
-
-def _format_date(value: date | None, config: ClientConfig, locale: Locale) -> str | None:
-    if value is None:
-        return None
-    return config.label(locale, "date_format").format(
-        weekday=config.label_list(locale, "weekday_names")[value.weekday()],
-        day=value.day,
-        month=config.label_list(locale, "month_names")[value.month - 1],
-    )

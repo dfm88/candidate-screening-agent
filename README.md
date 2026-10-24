@@ -26,6 +26,15 @@ npm run dev                               # http://localhost:5173, proxies /api 
 
 **Configuration is environment-only.** `uv run --env-file .env` loads `backend/.env` into the process environment. The app settings, the Logfire SDK (`LOGFIRE_TOKEN`) and Google auth (`CLOUDSDK_CONFIG`) all read it from there, so there's no second loading mechanism to keep in sync. Logfire and GCP are optional: without a token, traces stay on the console. The frontend has no env file, because anything Vite exposes ends up in the public bundle.
 
+**Chat with the agent in the terminal** (in memory, no database):
+
+```bash
+cd backend
+uv run --env-file .env python -m screening.cli --vacancy mx-cdmx-roma --name "José Hernández" --show-tools
+```
+
+By default the models run on Vertex AI in the EU, which needs the Google Cloud variables in `.env`. To try it with a single API key instead, set for example `SCREENING_MODELS=google:gemini-3.8-flash` and `GOOGLE_API_KEY`. That path is for local testing with test data only: in production, candidate data goes only to Vertex AI in the EU.
+
 To run the production image locally: `docker compose --profile app up --build` (http://localhost:8080). It picks up `backend/.env` if present.
 
 ## Deployment (GCP)

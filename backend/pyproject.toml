@@ -8,6 +8,7 @@ dependencies = [
     "asyncpg>=0.32",
     "fastapi>=0.162",
     "logfire[fastapi,sqlalchemy]>=5.3",
+    "pydantic-ai-slim[anthropic,google,logfire]>=2.61,<3",
     "pydantic-settings>=2.16",
     "pyyaml>=6.0",
     # <2.1 because opentelemetry-instrumentation-sqlalchemy (behind logfire) only supports <2.1 so far.
@@ -38,3 +39,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.logfire]
+# Tests and one-off scripts run without logfire.configure(); spans are simply not recorded there.
+ignore_no_config = true

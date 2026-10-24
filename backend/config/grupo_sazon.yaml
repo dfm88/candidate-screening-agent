@@ -5,7 +5,6 @@
 client_name: Grupo Sazón
 persona_name: Sazi
 synthetic: true
-max_tries: 2
 
 # ISO 8601 durations.
 timings:
@@ -135,28 +134,45 @@ platforms:
   Stuart: [stuart]
   Amazon Flex: [amazon flex, amazon]
 
-# UI words per locale: quick-reply labels, enum values in the recap, and date names.
+# Job facts the agent may share. SYNTHETIC, like the locations: placeholders for the client's real FAQ.
+# Written in English; the agent answers in the candidate's language and must not go beyond these answers.
+faq:
+  - question: How much does it pay?
+    answer: >-
+      Spain: from 9.80 EUR gross per hour, plus 0.50 EUR per delivery; full-time is around 1,450 EUR gross per
+      month. Mexico: from 320 MXN per day plus 12 MXN per delivery. Tips are 100% for the driver in both countries.
+  - question: Do I need my own vehicle?
+    answer: >-
+      No. Grupo Sazón provides an electric scooter, a helmet and a thermal bag. Drivers who prefer their own
+      motorbike get a fuel allowance.
+  - question: What kind of contract is it?
+    answer: >-
+      An employment contract with Grupo Sazón (not freelance), with social security from day one. A 2-month
+      trial period applies.
+  - question: What are the shifts?
+    answer: >-
+      Shifts follow the restaurant's peaks: lunch (about 12:30 to 16:30) and dinner (about 19:30 to 23:30),
+      Monday to Sunday. Part-time and weekend-only contracts exist. The exact schedule is agreed with the
+      restaurant manager.
+  - question: Which licenses are accepted?
+    answer: >-
+      Spain: a valid car license (B) or motorbike license (AM, A1, A2 or A). Mexico: a valid motorcycle or car
+      driver's license from the state where you work. The license must be valid today.
+  - question: Is there training?
+    answer: >-
+      Yes: a paid half-day induction on safety, the scooter and the delivery app before the first shift.
+  - question: What happens after this chat?
+    answer: >-
+      Recruiters review the answers. Qualified candidates are contacted for a short call with the team, usually
+      within 2 working days.
+  - question: Is there a uniform?
+    answer: Yes, Grupo Sazón provides the uniform and rain gear.
+
+# Quick-reply labels and the field names used in reminders.
 labels:
   es-ES:
-    no_experience: sin experiencia
     start: Empezar
     not_interested: No me interesa
-    "yes": Sí
-    "no": "No"
-    recap_ok: Sí, todo bien
-    recap_fix: Corregir algo
-    unknown: sin confirmar
-    none: ninguna
-    years: "{n} años"
-    one_year: 1 año
-    months: "{n} meses"
-    full_time: Jornada completa
-    part_time: Media jornada
-    weekends: Fines de semana
-    morning: Mañana
-    afternoon: Tarde
-    evening: Noche
-    flexible: Flexible
     field_full_name: tu nombre
     field_license: el carnet de conducir
     field_service_area: tu zona
@@ -164,29 +180,9 @@ labels:
     field_schedule: tu horario
     field_experience: tu experiencia
     field_start_date: la fecha de inicio
-    month_names: [enero, febrero, marzo, abril, mayo, junio, julio, agosto, septiembre, octubre, noviembre, diciembre]
-    weekday_names: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]
-    date_format: "{weekday} {day} de {month}"
   es-MX:
-    no_experience: sin experiencia
     start: Empezar
     not_interested: No me interesa
-    "yes": Sí
-    "no": "No"
-    recap_ok: Sí, todo bien
-    recap_fix: Corregir algo
-    unknown: sin confirmar
-    none: ninguna
-    years: "{n} años"
-    one_year: 1 año
-    months: "{n} meses"
-    full_time: Tiempo completo
-    part_time: Medio tiempo
-    weekends: Fines de semana
-    morning: Mañana
-    afternoon: Tarde
-    evening: Noche
-    flexible: Horario flexible
     field_full_name: tu nombre
     field_license: la licencia de manejo
     field_service_area: tu zona
@@ -194,29 +190,9 @@ labels:
     field_schedule: tu horario
     field_experience: tu experiencia
     field_start_date: la fecha de inicio
-    month_names: [enero, febrero, marzo, abril, mayo, junio, julio, agosto, septiembre, octubre, noviembre, diciembre]
-    weekday_names: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]
-    date_format: "{weekday} {day} de {month}"
   en:
-    no_experience: no experience
     start: Start
     not_interested: Not interested
-    "yes": "Yes"
-    "no": "No"
-    recap_ok: Yes, all good
-    recap_fix: Fix something
-    unknown: not confirmed
-    none: none
-    years: "{n} years"
-    one_year: 1 year
-    months: "{n} months"
-    full_time: Full-time
-    part_time: Part-time
-    weekends: Weekends
-    morning: Morning
-    afternoon: Afternoon
-    evening: Evening
-    flexible: Flexible
     field_full_name: your name
     field_license: your driving license
     field_service_area: your area
@@ -224,12 +200,10 @@ labels:
     field_schedule: your schedule
     field_experience: your experience
     field_start_date: your start date
-    month_names: [January, February, March, April, May, June, July, August, September, October, November, December]
-    weekday_names: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
-    date_format: "{weekday} {day} {month}"
 
-# Fixed messages. Each template is a list of bubbles; {placeholders} are filled by code.
-# Wording is gender-neutral about the candidate in every locale.
+# Fixed messages, only where the channel requires them: the first message and the reminders fall outside
+# WhatsApp's 24-hour window, and the failure notice is sent when the model itself is failing.
+# Each template is a list of bubbles; {placeholders} are filled by code. Gender-neutral in every locale.
 templates:
   first_message:
     es-ES:
@@ -238,114 +212,6 @@ templates:
       - "Hola, {first_name} 👋\nSoy {persona}, el asistente virtual de {client}.\n¿Te puedo hacer unas preguntas rápidas sobre tu solicitud para repartir en {city}? Son unos 3 minutos."
     en:
       - "Hi {first_name} 👋\nI'm {persona}, {client}'s virtual assistant.\nCan I ask you a few quick questions about your application to deliver in {city}? It takes about 3 minutes."
-  intro:
-    es-ES:
-      - "Perfecto, empezamos.\nSoy un asistente virtual: te haré unas preguntas cortas y el equipo de selección verá tus respuestas."
-      - "Primero, ¿tu nombre completo es {full_name}?"
-    es-MX:
-      - "Perfecto, empezamos.\nSoy un asistente virtual: te haré unas preguntas cortas y el equipo de reclutamiento verá tus respuestas."
-      - "Primero, ¿tu nombre completo es {full_name}?"
-    en:
-      - "Great, let's start.\nI'm a virtual assistant: I'll ask a few short questions, and the hiring team will see your answers."
-      - "First, is your full name {full_name}?"
-  intro_direct:
-    es-ES:
-      - "Hola 👋\nSoy {persona}, el asistente virtual de {client}. Te haré unas preguntas cortas sobre tu solicitud (unos 3 minutos) y el equipo de selección verá tus respuestas."
-      - "Primero, ¿tu nombre completo es {full_name}?"
-    es-MX:
-      - "Hola 👋\nSoy {persona}, el asistente virtual de {client}. Te haré unas preguntas cortas sobre tu solicitud (unos 3 minutos) y el equipo de reclutamiento verá tus respuestas."
-      - "Primero, ¿tu nombre completo es {full_name}?"
-    en:
-      - "Hi 👋\nI'm {persona}, {client}'s virtual assistant. I'll ask a few short questions about your application (about 3 minutes), and the hiring team will see your answers."
-      - "First, is your full name {full_name}?"
-  recap:
-    es-ES:
-      - "Repasamos:\n• Nombre: {full_name}\n• Carnet de conducir: {license}\n• Zona: {area}\n• Disponibilidad: {availability}\n• Horario: {schedule}\n• Experiencia: {experience}\n• Inicio: {start_date}\n¿Está todo bien?"
-    es-MX:
-      - "Repasamos:\n• Nombre: {full_name}\n• Licencia de manejo: {license}\n• Zona: {area}\n• Disponibilidad: {availability}\n• Horario: {schedule}\n• Experiencia: {experience}\n• Inicio: {start_date}\n¿Todo está correcto?"
-    en:
-      - "Quick recap:\n• Name: {full_name}\n• Driving license: {license}\n• Area: {area}\n• Availability: {availability}\n• Schedule: {schedule}\n• Experience: {experience}\n• Start: {start_date}\nIs everything right?"
-  close_qualified:
-    es-ES:
-      - "¡Listo, {first_name}!\nTu perfil cumple con los requisitos."
-      - "El equipo de selección te contactará pronto para el siguiente paso. ¡Gracias!"
-    es-MX:
-      - "¡Listo, {first_name}!\nTu perfil cumple con los requisitos."
-      - "El equipo de reclutamiento te contactará pronto para el siguiente paso. ¡Gracias!"
-    en:
-      - "All set, {first_name}!\nYour profile meets the requirements."
-      - "The hiring team will contact you soon about the next step. Thank you!"
-  close_not_qualified_license:
-    es-ES:
-      - "Gracias, {first_name}.\nEste puesto requiere carnet de conducir en vigor, así que por ahora no podemos seguir."
-      - "Cuando lo tengas, vuelve a escribirnos.\nSi prefieres que lo revise una persona, dímelo."
-      - "¿Te avisamos si hay otros puestos en {client}?"
-    es-MX:
-      - "Gracias, {first_name}.\nEste puesto requiere licencia de manejo vigente, así que por ahora no podemos seguir."
-      - "Cuando la tengas, vuelve a escribirnos.\nSi prefieres que lo revise una persona, dímelo."
-      - "¿Te avisamos si hay otras vacantes en {client}?"
-    en:
-      - "Thanks, {first_name}.\nThis role requires a valid driving license, so we can't continue for now."
-      - "Once you have one, write to us again.\nIf you'd rather a person reviewed this, just tell me."
-      - "Shall we let you know about other roles at {client}?"
-  close_not_qualified_area:
-    es-ES:
-      - "Gracias, {first_name}.\nAhora mismo no repartimos en tu zona, así que no podemos seguir con esta solicitud."
-      - "Si prefieres que lo revise una persona, dímelo."
-      - "¿Te avisamos si abrimos en tu zona o hay otros puestos?"
-    es-MX:
-      - "Gracias, {first_name}.\nPor ahora no tenemos reparto en tu zona, así que no podemos seguir con esta solicitud."
-      - "Si prefieres que lo revise una persona, dímelo."
-      - "¿Te avisamos si abrimos en tu zona o hay otras vacantes?"
-    en:
-      - "Thanks, {first_name}.\nWe don't deliver in your area right now, so we can't continue with this application."
-      - "If you'd rather a person reviewed this, just tell me."
-      - "Shall we let you know if we open in your area or have other roles?"
-  close_review:
-    es-ES:
-      - "Gracias, {first_name}. Ya tengo todo lo necesario."
-      - "Una persona del equipo revisará tu solicitud y te escribirá por aquí."
-    es-MX:
-      - "Gracias, {first_name}. Ya tengo todo lo que necesito."
-      - "Una persona del equipo revisará tu solicitud y te escribirá por aquí."
-    en:
-      - "Thanks, {first_name}. I have everything I need."
-      - "A person from the team will review your application and write to you here."
-  close_ended:
-    es-ES:
-      - "Voy a terminar la conversación aquí. Una persona del equipo revisará tu solicitud."
-    es-MX:
-      - "Voy a terminar la conversación aquí. Una persona del equipo revisará tu solicitud."
-    en:
-      - "I'll end the conversation here. A person from the team will review your application."
-  withdrawn:
-    es-ES:
-      - "Entendido, {first_name}. No te escribiremos más sobre esta solicitud. ¡Mucha suerte!"
-    es-MX:
-      - "Entendido, {first_name}. Ya no te escribiremos sobre esta solicitud. ¡Mucho éxito!"
-    en:
-      - "Understood, {first_name}. We won't message you again about this application. Best of luck!"
-  wrong_person:
-    es-ES:
-      - "Disculpa la molestia. No volveremos a escribir a este número."
-    es-MX:
-      - "Disculpa la molestia. No volveremos a escribir a este número."
-    en:
-      - "Sorry for the trouble. We won't message this number again."
-  talent_pool_yes:
-    es-ES:
-      - "¡Hecho! Te avisaremos. Gracias, {first_name}."
-    es-MX:
-      - "¡Listo! Te avisaremos. Gracias, {first_name}."
-    en:
-      - "Done! We'll let you know. Thanks, {first_name}."
-  talent_pool_no:
-    es-ES:
-      - "Entendido. ¡Gracias por tu tiempo, {first_name}!"
-    es-MX:
-      - "Entendido. ¡Gracias por tu tiempo, {first_name}!"
-    en:
-      - "Understood. Thanks for your time, {first_name}!"
   reminder_not_started:
     es-ES:
       - "Hola, {first_name}. ¿Seguimos con tu solicitud para repartir en {city}? Son solo 3 minutos."

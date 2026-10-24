@@ -11,9 +11,9 @@ Guidance for any coding agent (or human) working in this repository.
 
 ## Core principles
 
-- **The LLM understands, code decides.** The model extracts what the candidate said and phrases replies. Validation, the 2-try policy, knockouts, review reasons, outcomes and status transitions are deterministic, tested code. No model output sets an outcome or a status.
+- **The prompt drives the conversation; code owns the facts and the outcome.** One conversational agent follows the process design through its instructions and is verified by evals. Its tools validate what we own (service areas, dates), save it, and compute the outcome from the saved state. No model output sets an outcome or a status on its own.
 - **`unknown` is not `false`.** No thresholds the process design doesn't define. No tone adaptation based on who the candidate seems to be.
-- **Load-bearing messages are templates** (first contact, AI disclosure, reminders, recap, outcome messages, failure notice): per-locale strings rendered by code. The LLM writes only the conversational middle. Quick replies always come from code.
+- **Templates only where the channel requires them:** the first message and the reminders, which fall outside WhatsApp's 24-hour window. The agent writes everything else. Quick replies come from code (for now only Start / Not interested on the first message).
 - **The channel is an adapter.** The core speaks `inbound message → outbound messages` (template or free text). The web chat is the first adapter.
 - **Client configuration is data** (locations, service areas, locales, persona, timings, FAQ, templates). The screening schema is a typed Pydantic model, not a form engine.
 
@@ -26,21 +26,25 @@ Guidance for any coding agent (or human) working in this repository.
 - **Comments explain *why*, never *what*.**
 - **Errors are handled at the edges** (API, channel adapter, worker). The domain stays simple and raises nothing for expected candidate input.
 - **Check library APIs against the docs for the installed version** before using them (PydanticAI is 2.x; don't rely on memory of 1.x). Prefer reading the installed source when the docs are unclear.
+- **Use libraries the way their docs show** (PydanticAI, FastAPI, SQLAlchemy, Logfire, Pydantic Evals): documented APIs and defaults, no custom wrappers around them. Deviate only with a comment saying why.
+- **Read top to bottom.** One flow (a tool, an endpoint, a turn) reads in one function from start to end. Extract a helper only when it's reused or names a real concept, never as a single-use step the reader has to jump into. Use full-word names (`state`, `answers`), never one-letter ones.
+- **Results travel through return values,** not through side effects that a later step inspects.
+- **Write the least new code that works.** Before writing, ask whether it needs to exist, and whether the codebase, the standard library or an installed dependency already does it. Deleting code beats adding it. No speculative options, wrappers or config. Never cut validation at trust boundaries, error handling, or security.
 
 ## Tests
 
 Write tests where they pay off:
-- **Unit tests for deterministic logic:** qualification rules, field validation, the 2-try policy, postal-code lookup, date resolution, status transitions. Pure code, mostly without the DB.
+- **Unit tests for deterministic logic:** the outcome rules, postal-code and place lookup, date resolution, what the tools accept and reject, status transitions. Pure code, mostly without the DB.
 - **A few turn-orchestration tests with the LLM stubbed:** PydanticAI `TestModel` / `FunctionModel` via `agent.override`, with `models.ALLOW_MODEL_REQUESTS = False` in `conftest.py`.
 - **One end-to-end happy path through the API:** apply → chat → outcome.
-- **Conversational behaviour is covered by evals** (`backend/evals/`, Pydantic Evals), not by unit tests.
+- **Conversational behaviour is covered by evals** (`backend/evals/`, Pydantic Evals), not by unit tests. The evals are where the process design is enforced: outcome, saved fields, knockouts first, at most 2 tries per field, nothing asked twice, short messages with the question last, language and regional terms.
 - **No tests for trivial code:** models without logic, config loading, `__init__`, framework behaviour.
 
 ## LLM, prompts and evals
 
 - Prompts live in the repo (`backend/src/screening/prompts/`). The prompt version is a content hash recorded on every turn and eval run.
-- Prompts, tool names and descriptions are in English. Code sets the reply language every turn; locale wording and few-shot examples come from the locale config.
-- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults.
+- Prompts, tool names and descriptions are in English. The instructions carry the language and regional-wording rules; each turn's state block gives the country of work.
+- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults. The prompt version also covers these settings.
 - **Candidate data is processed in the EU only** (Vertex AI `eu` multi-region). Eval-only components (simulator, judge, benchmarks) see synthetic data only and may use other endpoints.
 - Spanish quality is checked by evals (regional terms, gender-neutral wording, fluency), because reviewers may not speak Spanish.
 
@@ -59,4 +63,4 @@ Write tests where they pay off:
 ## Git
 
 - Small, meaningful commits in conventional style (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
-- Never commit secrets, `.env*` files, `deploy.env` or anything in `.notes/`.
+- Never commit secrets, `.env*` files, `deploy.env` or anything in `.notes/`. Variable names are documented in `backend/example.env`, kept in sync with the code.

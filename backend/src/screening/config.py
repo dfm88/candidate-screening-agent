@@ -15,7 +15,8 @@ DEFAULT_CLIENT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "grupo_
 class Settings(BaseSettings):
     # Values come from the process environment only (`uv run --env-file .env`, Cloud Run, compose). Reading
     # .env here too would hide it from the Logfire SDK and Google auth, which only read the environment.
-    model_config = SettingsConfigDict(extra="ignore")
+    # Empty values mean "use the default", so a copied example.env with blanks just works.
+    model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
 
     environment: str = "local"
     database_url: str = "postgresql+asyncpg://screening:screening@localhost:55432/screening"
@@ -23,6 +24,12 @@ class Settings(BaseSettings):
     llm_content_logging: bool = False
     # Built frontend, served by the API in the container; absent in local dev where Vite serves it.
     static_dir: Path | None = None
+    # Comma-separated model specs: the first is the primary, the rest its fallbacks (see agent.build_model).
+    screening_models: str = "google-cloud:gemini-3.8-flash,google-cloud:gemini-3.5-flash"
+    # Vertex AI location for candidate data. `eu` keeps processing in the EU (multi-region endpoint).
+    vertex_location: str = "eu"
+    google_cloud_project: str | None = None
+    max_history_messages: int = 50
 
 
 class Country(StrEnum):
@@ -66,7 +73,7 @@ class Location(BaseModel):
     @model_validator(mode="after")
     def _places_inside_area(self) -> "Location":
         for place, code in self.places.items():
-            if not any(code.startswith(p) or p.startswith(code) for p in self.postal_prefixes):
+            if not any(code.startswith(prefix) or prefix.startswith(code) for prefix in self.postal_prefixes):
                 raise ValueError(f"{self.id}: place {place!r} maps to {code}, outside its postal prefixes")
         return self
 
@@ -87,19 +94,21 @@ class Timings(BaseModel):
     quiet_hours: QuietHours
 
 
-TemplateText = dict[Locale, list[str]]
+class FaqEntry(BaseModel):
+    question: str
+    answer: str
 
 
 class ClientConfig(BaseModel):
     client_name: str
     persona_name: str
     synthetic: bool
-    max_tries: int
     timings: Timings
     locations: list[Location]
     platforms: dict[str, list[str]]
-    labels: dict[Locale, dict[str, str | list[str]]]
-    templates: dict[str, TemplateText]
+    faq: list[FaqEntry]
+    labels: dict[Locale, dict[str, str]]
+    templates: dict[str, dict[Locale, list[str]]]
 
     @model_validator(mode="after")
     def _complete_locales(self) -> "ClientConfig":
@@ -111,17 +120,10 @@ class ClientConfig(BaseModel):
 
     @cached_property
     def locations_by_id(self) -> dict[str, Location]:
-        return {loc.id: loc for loc in self.locations}
+        return {location.id: location for location in self.locations}
 
     def label(self, locale: Locale, key: str) -> str:
-        value = self.labels[locale][key]
-        assert isinstance(value, str), key
-        return value
-
-    def label_list(self, locale: Locale, key: str) -> list[str]:
-        value = self.labels[locale][key]
-        assert isinstance(value, list), key
-        return value
+        return self.labels[locale][key]
 
     def render(self, key: str, locale: Locale, **params: str) -> list[str]:
         common = {"client": self.client_name, "persona": self.persona_name}

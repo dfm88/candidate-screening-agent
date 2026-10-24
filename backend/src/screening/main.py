@@ -17,6 +17,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         environment=settings.environment,
         send_to_logfire="if-token-present",
     )
+    logfire.instrument_pydantic_ai(include_content=settings.llm_content_logging)
     engine = db.make_engine(settings.database_url)
     logfire.instrument_sqlalchemy(engine=engine)
 
