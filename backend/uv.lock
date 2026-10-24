@@ -119,6 +119,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "logfire", extra = ["fastapi", "sqlalchemy"] },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -137,6 +138,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.162" },
     { name = "logfire", extras = ["fastapi", "sqlalchemy"], specifier = ">=5.3" },
     { name = "pydantic-settings", specifier = ">=2.16" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.55,<2.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54" },
 ]

@@ -1,0 +1,369 @@
+# Grupo Sazón client configuration.
+# SYNTHETIC DATA: locations, postal-code areas and place names are plausible fixtures for the demo, not the
+# client's real network (the brief gives none). Postal prefixes and places are real geography, simplified.
+
+client_name: Grupo Sazón
+persona_name: Sazi
+synthetic: true
+max_tries: 2
+
+# ISO 8601 durations.
+timings:
+  reminders_not_started: [PT4H, P1D]
+  reminders_in_progress: [PT2H, P1D]
+  abandon_after: P3D
+  quiet_hours: {start: "21:00", end: "09:00"}
+
+# A location is a restaurant. Its service area is a set of postal-code prefixes; `places` maps the
+# neighbourhood, town or colonia names candidates actually use to a prefix inside that area.
+locations:
+  # --- Spain ---
+  - id: es-mad-chamberi
+    name: Madrid Chamberí
+    country: ES
+    city: Madrid
+    timezone: Europe/Madrid
+    postal_prefixes: ["28003", "28004", "28010", "28015"]
+    places:
+      Chamberí: "28010"
+      Malasaña: "28004"
+      Argüelles: "28015"
+      Ríos Rosas: "28003"
+  - id: es-mad-getafe
+    name: Getafe
+    country: ES
+    city: Getafe
+    timezone: Europe/Madrid
+    postal_prefixes: ["2890"]
+    places:
+      Getafe: "2890"
+      El Bercial: "28907"
+      Sector 3: "28905"
+  - id: es-bcn-gracia
+    name: Barcelona Gràcia
+    country: ES
+    city: Barcelona
+    timezone: Europe/Madrid
+    postal_prefixes: ["08012", "08013", "08024", "08025"]
+    places:
+      Gràcia: "08012"
+      Vila de Gràcia: "08012"
+      Sagrada Família: "08013"
+      Camp d'en Grassot: "08025"
+  - id: es-gua-centro
+    name: Guadalajara (España)
+    country: ES
+    city: Guadalajara
+    timezone: Europe/Madrid
+    postal_prefixes: ["1900"]
+    places:
+      Guadalajara: "1900"
+  - id: es-vlc-ruzafa
+    name: Valencia Ruzafa
+    country: ES
+    city: Valencia
+    timezone: Europe/Madrid
+    postal_prefixes: ["46003", "46004", "46005", "46006"]
+    places:
+      Ruzafa: "46004"
+      Russafa: "46004"
+      El Carmen: "46003"
+  # --- Mexico ---
+  - id: mx-cdmx-roma
+    name: CDMX Roma-Condesa
+    country: MX
+    city: Ciudad de México
+    timezone: America/Mexico_City
+    postal_prefixes: ["061", "066", "067"]
+    places:
+      Roma Norte: "06700"
+      Roma Sur: "06760"
+      Condesa: "06140"
+      Hipódromo: "06100"
+      Juárez: "06600"
+  - id: mx-cdmx-coyoacan
+    name: CDMX Coyoacán
+    country: MX
+    city: Ciudad de México
+    timezone: America/Mexico_City
+    postal_prefixes: ["040", "041", "043"]
+    places:
+      Coyoacán: "040"
+      Del Carmen: "04100"
+      Santa Catarina: "04010"
+      Copilco: "04360"
+  - id: mx-gdl-americana
+    name: Guadalajara Americana
+    country: MX
+    city: Guadalajara
+    timezone: America/Mexico_City
+    postal_prefixes: ["441", "445", "446"]
+    places:
+      Americana: "44160"
+      Providencia: "44630"
+      Chapalita: "44500"
+      Centro: "44100"
+  - id: mx-mty-centro
+    name: Monterrey Centro
+    country: MX
+    city: Monterrey
+    timezone: America/Monterrey
+    postal_prefixes: ["640", "644"]
+    places:
+      Obispado: "64060"
+      Mitras Centro: "64460"
+      Centro: "64000"
+  - id: mx-mid-centro
+    name: Mérida Centro
+    country: MX
+    city: Mérida
+    timezone: America/Merida
+    postal_prefixes: ["970", "971"]
+    places:
+      García Ginerés: "97070"
+      Itzimná: "97100"
+      Centro: "97000"
+
+# Canonical delivery platforms and the spellings candidates use. Anything else is kept as given.
+platforms:
+  Glovo: [glovo]
+  Uber Eats: [uber eats, ubereats, uber]
+  Just Eat: [just eat, justeat]
+  Deliveroo: [deliveroo]
+  Rappi: [rappi]
+  DiDi Food: [didi food, didi]
+  Stuart: [stuart]
+  Amazon Flex: [amazon flex, amazon]
+
+# UI words per locale: quick-reply labels, enum values in the recap, and date names.
+labels:
+  es-ES:
+    no_experience: sin experiencia
+    start: Empezar
+    not_interested: No me interesa
+    "yes": Sí
+    "no": "No"
+    recap_ok: Sí, todo bien
+    recap_fix: Corregir algo
+    unknown: sin confirmar
+    none: ninguna
+    years: "{n} años"
+    one_year: 1 año
+    months: "{n} meses"
+    full_time: Jornada completa
+    part_time: Media jornada
+    weekends: Fines de semana
+    morning: Mañana
+    afternoon: Tarde
+    evening: Noche
+    flexible: Flexible
+    field_full_name: tu nombre
+    field_license: el carnet de conducir
+    field_service_area: tu zona
+    field_availability: tu disponibilidad
+    field_schedule: tu horario
+    field_experience: tu experiencia
+    field_start_date: la fecha de inicio
+    month_names: [enero, febrero, marzo, abril, mayo, junio, julio, agosto, septiembre, octubre, noviembre, diciembre]
+    weekday_names: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]
+    date_format: "{weekday} {day} de {month}"
+  es-MX:
+    no_experience: sin experiencia
+    start: Empezar
+    not_interested: No me interesa
+    "yes": Sí
+    "no": "No"
+    recap_ok: Sí, todo bien
+    recap_fix: Corregir algo
+    unknown: sin confirmar
+    none: ninguna
+    years: "{n} años"
+    one_year: 1 año
+    months: "{n} meses"
+    full_time: Tiempo completo
+    part_time: Medio tiempo
+    weekends: Fines de semana
+    morning: Mañana
+    afternoon: Tarde
+    evening: Noche
+    flexible: Horario flexible
+    field_full_name: tu nombre
+    field_license: la licencia de manejo
+    field_service_area: tu zona
+    field_availability: tu disponibilidad
+    field_schedule: tu horario
+    field_experience: tu experiencia
+    field_start_date: la fecha de inicio
+    month_names: [enero, febrero, marzo, abril, mayo, junio, julio, agosto, septiembre, octubre, noviembre, diciembre]
+    weekday_names: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]
+    date_format: "{weekday} {day} de {month}"
+  en:
+    no_experience: no experience
+    start: Start
+    not_interested: Not interested
+    "yes": "Yes"
+    "no": "No"
+    recap_ok: Yes, all good
+    recap_fix: Fix something
+    unknown: not confirmed
+    none: none
+    years: "{n} years"
+    one_year: 1 year
+    months: "{n} months"
+    full_time: Full-time
+    part_time: Part-time
+    weekends: Weekends
+    morning: Morning
+    afternoon: Afternoon
+    evening: Evening
+    flexible: Flexible
+    field_full_name: your name
+    field_license: your driving license
+    field_service_area: your area
+    field_availability: your availability
+    field_schedule: your schedule
+    field_experience: your experience
+    field_start_date: your start date
+    month_names: [January, February, March, April, May, June, July, August, September, October, November, December]
+    weekday_names: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+    date_format: "{weekday} {day} {month}"
+
+# Fixed messages. Each template is a list of bubbles; {placeholders} are filled by code.
+# Wording is gender-neutral about the candidate in every locale.
+templates:
+  first_message:
+    es-ES:
+      - "Hola, {first_name} 👋\nSoy {persona}, el asistente virtual de {client}.\n¿Te hago unas preguntas rápidas sobre tu solicitud para repartir en {city}? Son unos 3 minutos."
+    es-MX:
+      - "Hola, {first_name} 👋\nSoy {persona}, el asistente virtual de {client}.\n¿Te puedo hacer unas preguntas rápidas sobre tu solicitud para repartir en {city}? Son unos 3 minutos."
+    en:
+      - "Hi {first_name} 👋\nI'm {persona}, {client}'s virtual assistant.\nCan I ask you a few quick questions about your application to deliver in {city}? It takes about 3 minutes."
+  intro:
+    es-ES:
+      - "Perfecto, empezamos.\nSoy un asistente virtual: te haré unas preguntas cortas y el equipo de selección verá tus respuestas."
+      - "Primero, ¿tu nombre completo es {full_name}?"
+    es-MX:
+      - "Perfecto, empezamos.\nSoy un asistente virtual: te haré unas preguntas cortas y el equipo de reclutamiento verá tus respuestas."
+      - "Primero, ¿tu nombre completo es {full_name}?"
+    en:
+      - "Great, let's start.\nI'm a virtual assistant: I'll ask a few short questions, and the hiring team will see your answers."
+      - "First, is your full name {full_name}?"
+  intro_direct:
+    es-ES:
+      - "Hola 👋\nSoy {persona}, el asistente virtual de {client}. Te haré unas preguntas cortas sobre tu solicitud (unos 3 minutos) y el equipo de selección verá tus respuestas."
+      - "Primero, ¿tu nombre completo es {full_name}?"
+    es-MX:
+      - "Hola 👋\nSoy {persona}, el asistente virtual de {client}. Te haré unas preguntas cortas sobre tu solicitud (unos 3 minutos) y el equipo de reclutamiento verá tus respuestas."
+      - "Primero, ¿tu nombre completo es {full_name}?"
+    en:
+      - "Hi 👋\nI'm {persona}, {client}'s virtual assistant. I'll ask a few short questions about your application (about 3 minutes), and the hiring team will see your answers."
+      - "First, is your full name {full_name}?"
+  recap:
+    es-ES:
+      - "Repasamos:\n• Nombre: {full_name}\n• Carnet de conducir: {license}\n• Zona: {area}\n• Disponibilidad: {availability}\n• Horario: {schedule}\n• Experiencia: {experience}\n• Inicio: {start_date}\n¿Está todo bien?"
+    es-MX:
+      - "Repasamos:\n• Nombre: {full_name}\n• Licencia de manejo: {license}\n• Zona: {area}\n• Disponibilidad: {availability}\n• Horario: {schedule}\n• Experiencia: {experience}\n• Inicio: {start_date}\n¿Todo está correcto?"
+    en:
+      - "Quick recap:\n• Name: {full_name}\n• Driving license: {license}\n• Area: {area}\n• Availability: {availability}\n• Schedule: {schedule}\n• Experience: {experience}\n• Start: {start_date}\nIs everything right?"
+  close_qualified:
+    es-ES:
+      - "¡Listo, {first_name}!\nTu perfil cumple con los requisitos."
+      - "El equipo de selección te contactará pronto para el siguiente paso. ¡Gracias!"
+    es-MX:
+      - "¡Listo, {first_name}!\nTu perfil cumple con los requisitos."
+      - "El equipo de reclutamiento te contactará pronto para el siguiente paso. ¡Gracias!"
+    en:
+      - "All set, {first_name}!\nYour profile meets the requirements."
+      - "The hiring team will contact you soon about the next step. Thank you!"
+  close_not_qualified_license:
+    es-ES:
+      - "Gracias, {first_name}.\nEste puesto requiere carnet de conducir en vigor, así que por ahora no podemos seguir."
+      - "Cuando lo tengas, vuelve a escribirnos.\nSi prefieres que lo revise una persona, dímelo."
+      - "¿Te avisamos si hay otros puestos en {client}?"
+    es-MX:
+      - "Gracias, {first_name}.\nEste puesto requiere licencia de manejo vigente, así que por ahora no podemos seguir."
+      - "Cuando la tengas, vuelve a escribirnos.\nSi prefieres que lo revise una persona, dímelo."
+      - "¿Te avisamos si hay otras vacantes en {client}?"
+    en:
+      - "Thanks, {first_name}.\nThis role requires a valid driving license, so we can't continue for now."
+      - "Once you have one, write to us again.\nIf you'd rather a person reviewed this, just tell me."
+      - "Shall we let you know about other roles at {client}?"
+  close_not_qualified_area:
+    es-ES:
+      - "Gracias, {first_name}.\nAhora mismo no repartimos en tu zona, así que no podemos seguir con esta solicitud."
+      - "Si prefieres que lo revise una persona, dímelo."
+      - "¿Te avisamos si abrimos en tu zona o hay otros puestos?"
+    es-MX:
+      - "Gracias, {first_name}.\nPor ahora no tenemos reparto en tu zona, así que no podemos seguir con esta solicitud."
+      - "Si prefieres que lo revise una persona, dímelo."
+      - "¿Te avisamos si abrimos en tu zona o hay otras vacantes?"
+    en:
+      - "Thanks, {first_name}.\nWe don't deliver in your area right now, so we can't continue with this application."
+      - "If you'd rather a person reviewed this, just tell me."
+      - "Shall we let you know if we open in your area or have other roles?"
+  close_review:
+    es-ES:
+      - "Gracias, {first_name}. Ya tengo todo lo necesario."
+      - "Una persona del equipo revisará tu solicitud y te escribirá por aquí."
+    es-MX:
+      - "Gracias, {first_name}. Ya tengo todo lo que necesito."
+      - "Una persona del equipo revisará tu solicitud y te escribirá por aquí."
+    en:
+      - "Thanks, {first_name}. I have everything I need."
+      - "A person from the team will review your application and write to you here."
+  close_ended:
+    es-ES:
+      - "Voy a terminar la conversación aquí. Una persona del equipo revisará tu solicitud."
+    es-MX:
+      - "Voy a terminar la conversación aquí. Una persona del equipo revisará tu solicitud."
+    en:
+      - "I'll end the conversation here. A person from the team will review your application."
+  withdrawn:
+    es-ES:
+      - "Entendido, {first_name}. No te escribiremos más sobre esta solicitud. ¡Mucha suerte!"
+    es-MX:
+      - "Entendido, {first_name}. Ya no te escribiremos sobre esta solicitud. ¡Mucho éxito!"
+    en:
+      - "Understood, {first_name}. We won't message you again about this application. Best of luck!"
+  wrong_person:
+    es-ES:
+      - "Disculpa la molestia. No volveremos a escribir a este número."
+    es-MX:
+      - "Disculpa la molestia. No volveremos a escribir a este número."
+    en:
+      - "Sorry for the trouble. We won't message this number again."
+  talent_pool_yes:
+    es-ES:
+      - "¡Hecho! Te avisaremos. Gracias, {first_name}."
+    es-MX:
+      - "¡Listo! Te avisaremos. Gracias, {first_name}."
+    en:
+      - "Done! We'll let you know. Thanks, {first_name}."
+  talent_pool_no:
+    es-ES:
+      - "Entendido. ¡Gracias por tu tiempo, {first_name}!"
+    es-MX:
+      - "Entendido. ¡Gracias por tu tiempo, {first_name}!"
+    en:
+      - "Understood. Thanks for your time, {first_name}!"
+  reminder_not_started:
+    es-ES:
+      - "Hola, {first_name}. ¿Seguimos con tu solicitud para repartir en {city}? Son solo 3 minutos."
+    es-MX:
+      - "Hola, {first_name}. ¿Seguimos con tu solicitud para repartir en {city}? Son solo 3 minutos."
+    en:
+      - "Hi {first_name}. Shall we continue with your application to deliver in {city}? It only takes 3 minutes."
+  reminder_in_progress:
+    es-ES:
+      - "Hola, {first_name}. Nos quedamos en {stage}. ¿Seguimos?"
+    es-MX:
+      - "Hola, {first_name}. Nos quedamos en {stage}. ¿Seguimos?"
+    en:
+      - "Hi {first_name}. We stopped at {stage}. Shall we continue?"
+  failure:
+    es-ES:
+      - "Dame un momento, por favor."
+    es-MX:
+      - "Dame un momento, por favor."
+    en:
+      - "Give me a moment, please."

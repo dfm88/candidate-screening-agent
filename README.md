@@ -14,7 +14,7 @@ Requirements: Docker, [uv](https://docs.astral.sh/uv/), Node 22.
 ```bash
 docker compose up -d --wait db            # Postgres 18 on localhost:55432 (override with DB_HOST_PORT)
 cd backend
-cp .env.example .env                      # fill in what you need; every variable is documented there
+cp example.env .env                       # fill in what you need; every variable is documented there
 uv sync
 uv run --env-file .env alembic upgrade head
 uv run --env-file .env uvicorn screening.main:create_app --factory --reload --port 8000

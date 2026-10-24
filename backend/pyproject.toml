@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.162",
     "logfire[fastapi,sqlalchemy]>=5.3",
     "pydantic-settings>=2.16",
+    "pyyaml>=6.0",
     # <2.1 because opentelemetry-instrumentation-sqlalchemy (behind logfire) only supports <2.1 so far.
     "sqlalchemy[asyncio]>=2.0.55,<2.1",
     "uvicorn[standard]>=0.54",
@@ -29,7 +30,7 @@ build-backend = "uv_build"
 module-name = "screening"
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint]

@@ -22,7 +22,7 @@ services:
   app:
     profiles: [app]
     build: .
-    # Optional: e.g. an LLM API key and LOGFIRE_TOKEN. The values under `environment` take precedence.
+    # Optional (variables documented in backend/example.env). The values under `environment` take precedence.
     env_file:
       - path: backend/.env
         required: false
