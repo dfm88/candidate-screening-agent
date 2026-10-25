@@ -115,9 +115,9 @@ class StartDateSpec(BaseModel):
         default=None,
         ge=0,
         le=6,
-        description="For kind=weekday: 0=Monday … 6=Sunday, the next such day from today, never today. When the "
-        "candidate rules the next one out ('next Monday, not tomorrow', said on a Sunday), use kind=date with the "
-        "calendar date instead.",
+        description="For kind=weekday: 0=Monday … 6=Sunday, the next such day from today, never today. When that day "
+        "is tomorrow and the candidate's words don't say which they mean, ask first, giving both dates. When they rule "
+        "the next one out ('not this Thursday, the one after'), use kind=date with the calendar date instead.",
     )
 
 
@@ -282,7 +282,7 @@ def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldNam
 
 class SaveResult(BaseModel):
     saved: dict[FieldName, str]
-    not_saved: dict[FieldName, str] = Field(description="Why each answer wasn't saved, and what to ask instead.")
+    not_saved: dict[FieldName, str] = Field(description="Why each answer wasn't saved, and what to do instead.")
     knockout: str | None = Field(description="Set when the candidate doesn't qualify: call finish_screening.")
     still_to_ask: list[FieldName]
     decision: str | None = Field(
@@ -336,8 +336,19 @@ def save_answers(
                 f"{new.place!r} matches several areas ({names}): ask for the postal code"
             )
         else:
-            # An unknown place isn't a "no": only the postal code can tell.
-            not_saved[FieldName.SERVICE_AREA] = f"{new.place!r} isn't a place we know: ask for the postal code"
+            # An unknown place isn't a "no": only the postal code can tell. The names only, never their postal
+            # codes: with a code in sight the model could save one the candidate never gave.
+            known = dict.fromkeys(
+                place
+                for location in config.locations
+                if location.country is vacancy.country
+                for place in location.places
+            )
+            not_saved[FieldName.SERVICE_AREA] = (
+                f"{new.place!r} isn't a place we know. Known places: {', '.join(known)}. If the candidate wrote one of "
+                "them in other words, save that name as the place. If it looks like a misspelling of one, ask whether "
+                "they mean it and save it after their yes. Otherwise ask for the postal code."
+            )
 
     if new.availability:
         answers.availability = list(dict.fromkeys(new.availability))

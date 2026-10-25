@@ -740,3 +740,334 @@ Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means
 | cache collapses | 0.00 |
 | responses by model | gpt-5.6-terra 276 |
 
+## 20261025-1959 · prompt 9e68826b · 15 cases × 2
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra → google:gemini-3.8-flash |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 30 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.94 * |
+| naturalness | 0.86 * |
+| language_quality | 0.99 * |
+| summary | 0.81 * |
+| decision | 1.00 * |
+| p50 s | 2.6 |
+| p95 s | 4.0 |
+| request p50 / p95 / p99 s | 1.3 / 2.0 / 3.0 |
+| requests per turn (mean, max) | 1.83, 3 |
+| USD / completed | 0.0267 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,427,483 / 1,385,999 / 8,313 |
+| spend: agent / simulator USD | 0.480 / 0.257 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 336 |
+
+## 20261025-2010 · prompt 9e68826b · 7 cases × 1
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 7 ok, 0 failed |
+| all checks | 0.97 |
+| outcome | 0.86 |
+| grounded | 0.86 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.86 |
+| message_shape | 1.00 |
+| tone | 0.92 * |
+| naturalness | 0.87 * |
+| language_quality | 1.00 * |
+| saved_values | 1.00 * |
+| summary | 1.00 * |
+| decision | – * |
+| p50 s | 2.8 |
+| p95 s | 3.9 |
+| request p50 / p95 / p99 s | 1.4 / 2.2 / 3.4 |
+| requests per turn (mean, max) | 1.86, 2 |
+| USD / completed | 0.0459 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 395,253 / 381,778 / 2,325 |
+| spend: agent / simulator USD | 0.138 / 0.056 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 93 |
+
+## 20261025-2013 · prompt 9e68826b · 4 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 12 ok, 0 failed |
+| all checks | 0.95 |
+| outcome | 0.83 |
+| grounded | 0.75 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.75 |
+| message_shape | 1.00 |
+| tone | – * |
+| naturalness | – * |
+| language_quality | – * |
+| saved_values | 1.00 * |
+| summary | – * |
+| decision | – * |
+| p50 s | 2.5 |
+| p95 s | 3.5 |
+| request p50 / p95 / p99 s | 1.3 / 1.8 / 2.5 |
+| requests per turn (mean, max) | 1.85, 3 |
+| USD / completed | 0.1710 |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 546,528 / 537,250 / 3,382 |
+| spend: agent / simulator USD | 0.171 / 0.000 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 133 |
+
+## 20261025-2039 · prompt 88bffd3e · 6 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 18 ok, 0 failed |
+| all checks | 0.96 |
+| outcome | 0.78 |
+| grounded | 0.83 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.81 |
+| message_shape | 0.99 |
+| tone | – * |
+| naturalness | – * |
+| language_quality | – * |
+| saved_values | 1.00 * |
+| summary | – * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 3.2 |
+| request p50 / p95 / p99 s | 1.3 / 1.7 / 1.9 |
+| requests per turn (mean, max) | 1.72, 3 |
+| USD / completed | 0.1004 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 893,639 / 867,904 / 5,305 |
+| spend: agent / simulator USD | 0.301 / 0.000 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 201 |
+
+## 20261025-2041 · prompt 27c81930 · 1 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 3 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | – * |
+| naturalness | – * |
+| language_quality | – * |
+| saved_values | 1.00 * |
+| summary | – * |
+| decision | – * |
+| p50 s | 1.7 |
+| p95 s | 2.6 |
+| request p50 / p95 / p99 s | 1.3 / 1.9 / 2.0 |
+| requests per turn (mean, max) | 1.33, 2 |
+| USD / completed | – |
+| cache share | 0.82 |
+| agent tokens: input / cache read / output | 44,127 / 36,304 / 249 |
+| spend: agent / simulator USD | 0.030 / 0.000 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 12 |
+
+## 20261025-2041 · prompt 27c81930 · 6 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 18 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.93 |
+| message_shape | 0.99 |
+| tone | – * |
+| naturalness | – * |
+| language_quality | – * |
+| saved_values | 0.83 * |
+| summary | – * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 4.0 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.9 |
+| requests per turn (mean, max) | 1.75, 3 |
+| USD / completed | 0.0545 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 986,412 / 959,065 / 5,612 |
+| spend: agent / simulator USD | 0.327 / 0.000 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 215 |
+
+## 20261025-2044 · prompt 27c81930 · 2 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 6 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | – * |
+| naturalness | – * |
+| language_quality | – * |
+| saved_values | 1.00 * |
+| summary | – * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 2.9 |
+| request p50 / p95 / p99 s | 1.2 / 1.6 / 1.8 |
+| requests per turn (mean, max) | 1.67, 2 |
+| USD / completed | – |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 342,222 / 335,349 / 1,865 |
+| spend: agent / simulator USD | 0.106 / 0.000 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 75 |
+
+## 20261025-2045 · prompt 27c81930 · 12 cases × 2
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 24 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.93 * |
+| naturalness | 0.87 * |
+| language_quality | 1.00 * |
+| saved_values | 0.82 * |
+| summary | 0.88 * |
+| decision | – * |
+| p50 s | 2.6 |
+| p95 s | 4.1 |
+| request p50 / p95 / p99 s | 1.3 / 1.8 / 2.2 |
+| requests per turn (mean, max) | 1.89, 3 |
+| USD / completed | 0.0234 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,538,445 / 1,492,416 / 8,497 |
+| spend: agent / simulator USD | 0.515 / 0.395 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 340 |
+
+## 20261025-2050 · prompt 27c81930 · 4 cases × 1
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 4 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.80 * |
+| naturalness | 0.87 * |
+| language_quality | 1.00 * |
+| saved_values | 1.00 * |
+| summary | 0.83 * |
+| decision | – * |
+| p50 s | 2.5 |
+| p95 s | 14.0 |
+| request p50 / p95 / p99 s | 1.3 / 1.7 / 30.6 |
+| requests per turn (mean, max) | 1.82, 2 |
+| USD / completed | 0.0245 |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 230,159 / 224,880 / 1,295 |
+| spend: agent / simulator USD | 0.074 / 0.057 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 51 |
+

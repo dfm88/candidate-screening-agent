@@ -159,6 +159,17 @@ def test_unusable_area_answers_are_not_saved_and_say_what_to_ask(new: NewAnswers
     assert state.answers.area is None and state.knockout is None  # unknown is not "no"
 
 
+def test_a_place_miss_lists_the_known_places_and_the_other_answers_are_still_saved() -> None:
+    state, result = save(NewAnswers(place="Zona Norte", availability=[Availability.WEEKENDS]))
+    assert result.saved == {FieldName.AVAILABILITY: "weekends"}
+    message = result.not_saved[FieldName.SERVICE_AREA]
+    assert all(place in message for place in ("Chamberí", "Malasaña", "Getafe", "Gràcia"))
+    assert "Roma Norte" not in message  # the vacancy's country only
+    # Names only: with a postal code in sight the model could save one the candidate never gave.
+    assert not any(prefix in message for location in CONFIG.locations for prefix in location.postal_prefixes)
+    assert state.answers.area is None and state.knockout is None
+
+
 def test_a_known_place_saves_the_matching_restaurant_even_if_not_the_applied_one() -> None:
     _, result = save(NewAnswers(place="Obispado"), app=CDMX)
     assert result.saved[FieldName.SERVICE_AREA] == "lives at Obispado, in the area of the Monterrey Centro restaurant"

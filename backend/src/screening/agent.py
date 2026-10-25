@@ -132,6 +132,8 @@ def instructions(ctx: RunContext[Deps]) -> str:
 def save_answers(ctx: RunContext[Deps], answers: NewAnswers) -> domain.SaveResult:
     """Save the candidate's answers, several at once and in any order, corrections included.
 
+    What can't be saved comes back under not_saved: the reason, and the valid options when there are any.
+
     Args:
         answers: Only what the candidate said explicitly.
     """

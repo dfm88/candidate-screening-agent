@@ -1,16 +1,18 @@
 """The eval task: a candidate chats with the screening agent, in memory, until the conversation ends; then the
 summary agent writes the recruiter summary.
 
-The candidate is simulated: an LLM plays a persona from cases.yaml and, before each reply, labels what the agent's
-latest messages asked for. The deterministic evaluators read those labels (knockouts first, no re-asks, at most two
-tries). A scripted case replays fixed candidate messages instead, to reproduce an observed failure exactly.
+The candidate is simulated: an LLM plays a persona from cases.yaml and, with each reply, labels what the agent's
+latest messages asked for and what its own messages provide. The deterministic evaluators read those labels (knockouts
+first, no re-asks, at most two tries, nothing saved that wasn't provided). A scripted case replays fixed candidate
+messages instead, to reproduce an observed failure exactly, and declares what each of them provides.
 """
 
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelMessage, ModelRequest, ModelResponse, RunContext, TextPart, ToolCallPart
@@ -18,7 +20,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import increment_eval_metric
 
-from screening.agent import RecruiterSummary, history_from_turns, run_turn, write_summary
+from screening.agent import Medium, RecruiterSummary, history_from_turns, run_turn, save_answers, write_summary
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Locale, load_client_config
 from screening.domain import (
     Application,
@@ -30,7 +32,9 @@ from screening.domain import (
     Schedule,
     ScreeningState,
     Status,
+    describe_saved,
 )
+from screening.service import render_reminder
 
 CONFIG = load_client_config(DEFAULT_CLIENT_CONFIG)
 
@@ -44,6 +48,20 @@ class ScriptedDecision(BaseModel):
     outcome: Literal[Outcome.QUALIFIED, Outcome.NOT_QUALIFIED]
 
 
+class ScriptedReminder(BaseModel):
+    """The mid-chat reminder, sent after a scripted turn as the clock sends it after a silence: a template in the chat.
+    The case's clock doesn't move: no rule the agent follows depends on the hours in between."""
+
+    after_turn: int = Field(ge=1, description="The candidate goes quiet after this many scripted turns.")
+
+
+class ScriptedTurn(BaseModel):
+    """One turn of a replayed exchange: the candidate's messages and the fields they give an answer for."""
+
+    messages: list[str]
+    provides: list[FieldName] = []
+
+
 class Persona(BaseModel):
     """The case inputs: the application, the clock, and who the candidate is (for the simulator, in English)."""
 
@@ -53,9 +71,13 @@ class Persona(BaseModel):
     now: datetime
     profile: str
     max_turns: int = 14
-    # Fixed candidate messages, one list per turn, sent instead of the simulator's: a replayed failure.
-    script: list[list[str]] | None = None
+    # Voice: the turns read the voice rules too and are spoken as one reply, as in a call. The history is still the
+    # stored turns, tool calls included, not the call's transcript: no cut-offs, no speech-to-text.
+    medium: Medium = Medium.TEXT
+    # Fixed candidate messages, sent instead of the simulator's: a replayed failure.
+    script: list[ScriptedTurn] | None = None
     decision: ScriptedDecision | None = None
+    reminder: ScriptedReminder | None = None
 
 
 class ExpectedAnswers(BaseModel):
@@ -68,7 +90,8 @@ class ExpectedAnswers(BaseModel):
     schedule: list[Schedule] | None = None
     experience_years: float | None = None
     platforms: list[str] | None = None
-    start_date: date | None = None
+    # A list when more than one is right; null in it accepts no date saved (the agent asked instead).
+    start_date: date | list[date | None] | None = None
 
 
 class Expected(BaseModel):
@@ -91,12 +114,17 @@ Asked = FieldName | Literal["recap", "talent_pool", "other"]
 
 class Turn(BaseModel):
     candidate: list[str]
+    # The fields `candidate` gives an answer for: the simulator's label, or the script's.
+    provided: list[FieldName] = []
     reply: list[str]
-    # Templates we sent after the reply, before the candidate's next message: the recruiter's decision.
+    # Templates we sent after the reply, before the candidate's next message: the recruiter's decision, a reminder.
     sent_after: list[str] = []
+    reminder: list[str] = []
     # The simulator's reading of `reply`: what it asked the candidate for.
     asked_about: list[Asked] = []
     tool_calls: list[str]
+    # The arguments of each save_answers call: tool_calls holds names only, and the judge reads what was passed.
+    save_arguments: list[dict[str, Any]] = []
     # model_name of every response in the turn: with a fallback, this shows which model answered.
     models: list[str]
     seconds: float
@@ -117,14 +145,30 @@ class ScreeningRun(BaseModel):
     # Written once the screening ends (completed or withdrawn).
     summary: RecruiterSummary | None = None
 
-    def transcript(self, assistant: str = "Assistant", candidate: str = "Candidate") -> str:
+    def transcript(self, assistant: str = "Assistant", candidate: str = "Candidate", with_saves: bool = False) -> str:
+        """With saves, each candidate turn is followed by what the assistant saved in it and the arguments it passed."""
         lines = [f"{assistant}: {message}" for message in self.first_message]
-        for turn in self.turns:
+        for turn, saved in zip(self.turns, self.saved_by_turn(), strict=True):
             lines += [f"{candidate}: {message}" for message in turn.candidate]
+            if with_saves and saved:
+                values = "; ".join(f"{field}={value}" for field, value in saved.items())
+                arguments = " ".join(json.dumps(arguments, ensure_ascii=False) for arguments in turn.save_arguments)
+                lines.append(f"Saved: {values} (arguments: {arguments})")
             lines += [f"{assistant}: {message}" for message in turn.reply]
             # Labelled apart, so the judge can tell the hiring team's decision from the assistant's replies.
             lines += [f"Hiring team (decision): {message}" for message in turn.sent_after]
+            lines += [f"{assistant} (reminder, after a silence): {message}" for message in turn.reminder]
         return "\n".join(lines)
+
+    def saved_by_turn(self) -> list[dict[FieldName, str]]:
+        """What each turn saved, as the recruiter reads it: the fields whose value differs from the turn before."""
+        saved: list[dict[FieldName, str]] = []
+        before: dict[FieldName, str] = {}
+        for turn in self.turns:
+            after = describe_saved(turn.state, CONFIG)
+            saved.append({field: value for field, value in after.items() if before.get(field) != value})
+            before = after
+        return saved
 
 
 # --- The simulated candidate ---------------------------------------------------------------------------------
@@ -139,6 +183,11 @@ class CandidateTurn(BaseModel):
     messages: list[str] = Field(
         description="Your next chat messages, as you'd type them on your phone: usually one, up to three. "
         "Empty when done."
+    )
+    provided: list[FieldName] = Field(
+        description="The fields your new messages give an answer for, asked or not, corrections included. A yes to "
+        "'is your full name …?' gives full_name; a yes to a recap gives nothing new. A yes that only agrees to start "
+        "or to go on, a greeting or a question gives nothing. Empty if they give none."
     )
     done: bool = Field(
         description="True when the conversation is over for you: the assistant said goodbye or gave you the "
@@ -211,7 +260,7 @@ def make_task(
 
         for number in range(len(persona.script) if persona.script else persona.max_turns):
             if persona.script:
-                messages, done = persona.script[number], False
+                messages, provided, done = persona.script[number].messages, persona.script[number].provides, False
             else:
                 candidate = await simulator.run(
                     candidate_prompt(first_message, turns),
@@ -225,7 +274,7 @@ def make_task(
                 )
                 if turns:
                     turns[-1].asked_about = candidate.output.asked_about
-                messages, done = candidate.output.messages, candidate.output.done
+                messages, provided, done = candidate.output.messages, candidate.output.provided, candidate.output.done
             # A last message ("no, gracias") still goes out before the candidate leaves.
             if not messages:
                 break
@@ -241,6 +290,7 @@ def make_task(
                 now=persona.now,
                 conversation_id=conversation_id,
                 decision=decision,
+                medium=persona.medium,
             )
             seconds = time.perf_counter() - started
             state = result.state
@@ -255,10 +305,13 @@ def make_task(
                 for sent, response in zip(sent_at, responses, strict=True)
                 if sent is not None
             ]
+            calls = [part for response in responses for part in response.parts if isinstance(part, ToolCallPart)]
             turn = Turn(
                 candidate=messages,
+                provided=provided,
                 reply=result.reply,
-                tool_calls=[part.tool_name for r in responses for part in r.parts if isinstance(part, ToolCallPart)],
+                tool_calls=[call.tool_name for call in calls],
+                save_arguments=[call.args_as_dict() for call in calls if call.tool_name == save_answers.__name__],
                 models=[response.model_name or "unknown" for response in responses],
                 seconds=seconds,
                 request_seconds=request_seconds,
@@ -281,6 +334,11 @@ def make_task(
                 )
                 stored_turns.append([ModelResponse(parts=[TextPart("\n\n".join(turn.sent_after))])])
                 decision = persona.decision.outcome
+            if persona.reminder and persona.reminder.after_turn == len(turns):
+                if state.status is not Status.IN_PROGRESS:
+                    raise ValueError(f"the reminder comes after turn {len(turns)}, but the screening isn't in progress")
+                turn.reminder = render_reminder(CONFIG, "reminder_in_progress", state, application)
+                stored_turns.append([ModelResponse(parts=[TextPart("\n\n".join(turn.reminder))])])
             increment_eval_metric("turns", 1)
             increment_eval_metric("agent_input_tokens", turn.input_tokens)
             increment_eval_metric("agent_cache_read_tokens", turn.cache_read_tokens)

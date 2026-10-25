@@ -33,6 +33,7 @@ from evals.evaluators import (
     Asking,
     CacheHealth,
     ConversationJudge,
+    GroundedAnswers,
     MessageShape,
     NoStandaloneAcknowledgement,
     OutcomeMatches,
@@ -52,6 +53,7 @@ JUDGE = "openai:gpt-6-luna"
 JUDGE_SETTINGS = ModelSettings(thinking="low")
 ASSERTIONS = [
     "outcome",
+    "grounded",
     "knockouts_first",
     "no_reask",
     "two_tries_max",
@@ -61,7 +63,7 @@ ASSERTIONS = [
     "gender_neutral",
 ]
 SCORES = ["saved_answers", "message_shape"]
-JUDGE_SCORES = [*RUBRICS, "summary", "decision"]
+JUDGE_SCORES = [*RUBRICS, "saved_values", "summary", "decision"]
 
 
 def is_transient(error: BaseException) -> bool:
@@ -87,6 +89,7 @@ def load_dataset(case_names: list[str]) -> Dataset[Persona, ScreeningRun, Expect
     for evaluator in (
         OutcomeMatches(),
         SavedAnswers(),
+        GroundedAnswers(),
         Asking(),
         MessageShape(),
         NoStandaloneAcknowledgement(),
@@ -175,13 +178,16 @@ def write_transcripts(report: EvaluationReport, path: Path) -> None:
         parts.append(f"## {case.name}\n\nNotes: {'; '.join(failed) or 'nothing'}\n")
         run = case.output
         parts += [quote("assistant", message) for message in run.first_message]
-        for turn in run.turns:
+        for turn, saved in zip(run.turns, run.saved_by_turn(), strict=True):
             parts += [quote("candidate", message) for message in turn.candidate]
             parts.append(
+                f"`provided: {', '.join(turn.provided) or '-'} · saved: "
+                f"{'; '.join(f'{field}={value}' for field, value in saved.items()) or '-'}`\n\n"
                 f"`{', '.join(turn.tool_calls) or 'no tools'} · {', '.join(turn.models)} · {turn.seconds:.1f}s`"
             )
             parts += [quote("assistant", message) for message in turn.reply]
             parts += [quote("assistant (template)", message) for message in turn.sent_after]
+            parts += [quote("assistant (reminder)", message) for message in turn.reminder]
             parts.append(f"`asked: {', '.join(turn.asked_about) or '-'}`\n")
         answers = run.state.answers
         parts.append(f"Final: status={run.state.status} outcome={run.state.outcome} license={answers.license}\n")

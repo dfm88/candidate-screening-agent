@@ -2,7 +2,8 @@
 # is what the screening should end with. All clocks are Wednesday 21 October 2026, 16:00 UTC: 18:00 in Spain,
 # 10:00 in Mexico. Don't copy these exchanges into the prompt as examples (AGENTS.md: changing the prompt).
 # A case with a `script` replays fixed candidate messages (an observed failure) instead of the simulator, and is
-# checked on the state after its last message.
+# checked on the state after its last message. Each scripted turn declares the fields its messages give an answer for
+# (`provides`, as the simulator labels its own): a field saved before any turn provides it is an invented answer.
 cases:
   - name: scripted_mx_foreign_license_not_a_no
     inputs:
@@ -14,10 +15,13 @@ cases:
         Luis, Colombian, living in Monterrey, with a Colombian license whose validity in Mexico he doesn't know.
         Replayed from a Gemini 3.5 Flash-Lite run (2026-10-24) that saved license=no after a leading question.
       script:
-        - ["Hola, sí, claro. Pregúntame 😊"]
-        - ["Sí, mi nombre completo es Luis Alberto Pérez Gómez."]
-        - ["Tengo licencia de Colombia, pero no estoy seguro si sirve para manejar en México; nunca lo he revisado."]
-        - ["No, por ahora solo tengo la licencia de Colombia. No estoy seguro si sirve en México; nunca lo he revisado."]
+        - messages: ["Hola, sí, claro. Pregúntame 😊"]
+        - messages: ["Sí, mi nombre completo es Luis Alberto Pérez Gómez."]
+          provides: [full_name]
+        - messages: ["Tengo licencia de Colombia, pero no estoy seguro si sirve para manejar en México; nunca lo he revisado."]
+          provides: [license]
+        - messages: ["No, por ahora solo tengo la licencia de Colombia. No estoy seguro si sirve en México; nunca lo he revisado."]
+          provides: [license]
     metadata:
       tags: [mx, scripted, unclear]
       status: in_progress
@@ -39,11 +43,13 @@ cases:
         terra run in the browser (2026-10-25): after the decision the agent still said the team would review her
         application, because the context block only showed the rules' outcome.
       script:
-        - ["Empezar"]
-        - ["sí, soy yo. pero prefiero hablar con una persona del equipo"]
-        - ["no gracias, prefiero esperar a que me escriban"]
-        - ["genial! y cuándo me llamáis?"]
-        - ["ah por cierto, el carnet lo tengo caducado desde el mes pasado"]
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo. pero prefiero hablar con una persona del equipo"]
+          provides: [full_name]
+        - messages: ["no gracias, prefiero esperar a que me escriban"]
+        - messages: ["genial! y cuándo me llamáis?"]
+        - messages: ["ah por cierto, el carnet lo tengo caducado desde el mes pasado"]
+          provides: [license]
       decision: {after_turn: 3, outcome: qualified}
     metadata:
       tags: [es, scripted, decision]
@@ -54,6 +60,310 @@ cases:
       answers:
         full_name: Marta Ruiz Gómez
         license: "no"
+
+  # The four place cases: a place the lookup misses comes back with the known places (2026-10-25). The candidate's
+  # words are not the ones in the config, and none of them is a replay of a failure: they are held-out variants.
+  # `location_id: not saved` is the evaluator's marker for "no area saved yet".
+  - name: scripted_es_place_with_extra_words
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Elena Vidal Prieto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Elena answers the postal code question with the area she lives in, wrapped in extra words ("la zona de
+        Ríos Rosas"), which the lookup doesn't match as written.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el carnet B en vigor"]
+          provides: [license]
+        - messages: ["vivo por la zona de Ríos Rosas"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Elena Vidal Prieto
+        license: "yes"
+        location_id: es-mad-chamberi
+
+  - name: scripted_es_place_typo_not_guessed
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Elena Vidal Prieto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Elena misspells her neighbourhood ("Malasañna"). The agent must not save a guess on that message: it
+        confirms the place with her first.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el carnet B en vigor"]
+          provides: [license]
+        - messages: ["vivo en Malasañna"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Elena Vidal Prieto
+        license: "yes"
+        location_id: not saved
+
+  - name: scripted_es_place_typo_confirmed
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Elena Vidal Prieto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Elena misspells her neighbourhood ("Malasañna") and confirms the place the agent offers. The area is saved
+        after her yes.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el carnet B en vigor"]
+          provides: [license]
+        - messages: ["vivo en Malasañna"]
+          provides: [service_area]
+        - messages: ["sí, esa"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Elena Vidal Prieto
+        license: "yes"
+        location_id: es-mad-chamberi
+
+  - name: scripted_es_place_not_listed
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Elena Vidal Prieto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Elena lives in a real Madrid neighbourhood that isn't one of the known places ("Salamanca"). The agent must
+        not map it to a listed place: no area is saved, and it asks for the postal code.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el carnet B en vigor"]
+          provides: [license]
+        - messages: ["vivo en Salamanca"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Elena Vidal Prieto
+        license: "yes"
+        location_id: not saved
+
+  # Seen live in a voice call (prompt 71e6804a): at the recap the candidate confirmed and corrected the start date in
+  # one message; terra saved the date, then said the profile met the requirements without calling finish_screening.
+  # Varied: a text chat in Mexico, other answers and dates.
+  - name: scripted_mx_recap_confirmed_with_correction
+    inputs:
+      vacancy: mx-cdmx-roma
+      name_on_application: Karla Méndez Soto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Karla confirms the recap and moves her start date in the same message. The close must come from
+        finish_screening, in that turn.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, así es"]
+          provides: [full_name]
+        - messages: ["sí, tengo licencia vigente de la CDMX"]
+          provides: [license]
+        - messages: ["vivo en la Roma Norte, cp 06700"]
+          provides: [service_area]
+        - messages: ["medio tiempo nada más, en las tardes"]
+          provides: [availability, schedule]
+        - messages: ["como un año en Rappi"]
+          provides: [experience]
+        - messages: ["el 2 de noviembre"]
+          provides: [start_date]
+        - messages: ["sí todo bien, solo que mejor empiezo el 9 de noviembre"]
+          provides: [start_date]
+    metadata: &recap_confirmed_with_correction_expected
+      tags: [mx, scripted, close]
+      status: completed
+      outcome: qualified
+      final_language: es
+      answers:
+        full_name: Karla Méndez Soto
+        license: "yes"
+        location_id: mx-cdmx-roma
+        availability: [part_time]
+        schedule: [afternoon]
+        experience_years: 1
+        platforms: [Rappi]
+        start_date: 2026-11-09
+
+  # Seen live: "el lunes que viene, no mañana", said on a Sunday, saved as tomorrow. Varied, since the instructions'
+  # Dates section uses that phrase: Friday, said on a Thursday. The Friday of next week, never tomorrow.
+  - name: scripted_es_next_friday_not_tomorrow
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Sergio Lloret Vidal
+      application_language: es
+      # Thursday 22 October, 18:00 in Valencia.
+      now: 2026-10-22T16:00:00Z
+      profile: |
+        Sergio rules tomorrow out when he gives his start date ("el viernes que viene, no mañana", on a Thursday).
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, ese soy yo"]
+          provides: [full_name]
+        - messages: ["carnet B en vigor, y vivo en Russafa, el 46004"]
+          provides: [license, service_area]
+        - messages: ["jornada completa, por las mañanas"]
+          provides: [availability, schedule]
+        - messages: ["nunca he repartido"]
+          provides: [experience]
+        - messages: ["el viernes que viene, no mañana"]
+          provides: [start_date]
+    metadata:
+      tags: [es, scripted, dates]
+      status: in_progress
+      final_language: es
+      answers:
+        license: "yes"
+        location_id: es-vlc-ruzafa
+        start_date: 2026-10-30
+
+  # Seen in the voice runs, twice (one on the deployed app): a bare "el lunes que viene", said on a Sunday, saved as
+  # Monday 2 November without asking. The rule: the next Monday (tomorrow), or ask.
+  - name: scripted_es_bare_next_monday_on_sunday
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Núria Puig Serra
+      application_language: es
+      # Sunday 25 October, 17:00 in Barcelona.
+      now: 2026-10-25T16:00:00Z
+      profile: |
+        Núria gives her start date as a bare "el lunes que viene" on a Sunday.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["tengo el B en vigor desde hace tres años"]
+          provides: [license]
+        - messages: ["08012"]
+          provides: [service_area]
+        - messages: ["fines de semana, por la tarde"]
+          provides: [availability, schedule]
+        - messages: ["dos años con Glovo"]
+          provides: [experience]
+        - messages: ["el lunes que viene"]
+          provides: [start_date]
+    metadata: &bare_next_monday_on_sunday_expected
+      tags: [es, scripted, dates]
+      status: in_progress
+      final_language: es
+      answers:
+        location_id: es-bcn-gracia
+        start_date: [2026-10-26, null]
+
+  # The two cases above in voice mode, as they were seen in calls: the same expectations, and the same script but for
+  # the yes to the postal code read back, which spoken turns ask for before saving it.
+  - name: scripted_mx_recap_confirmed_with_correction_voice
+    inputs:
+      vacancy: mx-cdmx-roma
+      name_on_application: Karla Méndez Soto
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      medium: voice
+      profile: |
+        The recap case, spoken.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, así es"]
+          provides: [full_name]
+        - messages: ["sí, tengo licencia vigente de la CDMX"]
+          provides: [license]
+        - messages: ["vivo en la Roma Norte, cp 06700"]
+          provides: [service_area]
+        - messages: ["sí, ese"]
+          provides: [service_area]
+        - messages: ["medio tiempo nada más, en las tardes"]
+          provides: [availability, schedule]
+        - messages: ["como un año en Rappi"]
+          provides: [experience]
+        - messages: ["el 2 de noviembre"]
+          provides: [start_date]
+        - messages: ["sí todo bien, solo que mejor empiezo el 9 de noviembre"]
+          provides: [start_date]
+    metadata:
+      <<: *recap_confirmed_with_correction_expected
+      tags: [mx, scripted, close, voice]
+
+  - name: scripted_es_bare_next_monday_on_sunday_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Núria Puig Serra
+      application_language: es
+      now: 2026-10-25T16:00:00Z
+      medium: voice
+      profile: |
+        The bare-Monday case, spoken.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["tengo el B en vigor desde hace tres años"]
+          provides: [license]
+        - messages: ["08012"]
+          provides: [service_area]
+        - messages: ["sí, ese"]
+          provides: [service_area]
+        - messages: ["fines de semana, por la tarde"]
+          provides: [availability, schedule]
+        - messages: ["dos años con Glovo"]
+          provides: [experience]
+        - messages: ["el lunes que viene"]
+          provides: [start_date]
+    metadata:
+      <<: *bare_next_monday_on_sunday_expected
+      tags: [es, scripted, dates, voice]
+
+  # Diego, Sun 25 pm: the mid-chat reminder at the license ("Nos quedamos en el carnet de conducir. ¿Seguimos?") is
+  # answered with "sí". That agrees to go on; it isn't a license, which is the knockout. Expected: the license stays
+  # unknown and the agent asks the license question.
+  - name: scripted_es_yes_to_reminder_not_a_license
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Ana Torres Lozano
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Ana goes quiet at the license question, gets the mid-chat reminder and answers it with a bare "sí".
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí"]
+      reminder: {after_turn: 2}
+    metadata:
+      tags: [es, scripted, reminder, grounded]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Ana Torres Lozano
+        license: null
 
   - name: es_madrid_burst_qualified
     inputs:
@@ -290,3 +600,94 @@ cases:
       tags: [mx, withdrawn]
       status: withdrawn
       final_language: es
+
+  # Personas that tempt invented answers (Sun 25): luna invented a whole profile on "Sure, go ahead" and saved a license
+  # during the name turn. The `grounded` check reads them; the judge reads the values.
+  - name: es_valencia_vague_go_ahead
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Ciara Doyle
+      application_language: en
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Ciara Doyle, 33, Irish, living in Valencia for ten years. You write in English only, very briefly.
+        - Your first reply is only a vague yes, like "Sure, go ahead", and nothing else.
+        - After that, answer only what each question asks, in a few words. Never volunteer anything.
+        - Driving license: Spanish car license (B), valid.
+        - You live in El Carmen, postal code 46003.
+        - Availability: weekends only. Schedule: mornings.
+        - Experience: none.
+        - Start date: in a week.
+    metadata:
+      tags: [es, english, grounded]
+      status: completed
+      outcome: qualified
+      final_language: en
+      answers:
+        full_name: Ciara Doyle
+        license: "yes"
+        location_id: es-vlc-ruzafa
+        availability: [weekends]
+        schedule: [morning]
+        experience_years: 0
+        start_date: 2026-10-28
+
+  - name: mx_monterrey_name_only
+    inputs:
+      vacancy: mx-mty-centro
+      name_on_application: Rodrigo Elizondo Garza
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Rodrigo Elizondo Garza, 24, from Monterrey. You write very short Mexican Spanish, lowercase.
+        - Your first reply is only your first name, "rodrigo", and nothing else.
+        - After that, answer what each question asks, briefly. When asked to confirm your full name, say yes.
+        - Driving license: valid Nuevo León license.
+        - You live in Mitras Centro, postal code 64460.
+        - Availability: full-time. Schedule: any time, you don't mind.
+        - Experience: six months with Uber Eats.
+        - Start date: right away.
+    metadata:
+      tags: [mx, grounded]
+      status: completed
+      outcome: qualified
+      final_language: es
+      answers:
+        full_name: Rodrigo Elizondo Garza
+        license: "yes"
+        location_id: mx-mty-centro
+        availability: [full_time]
+        schedule: [flexible]
+        experience_years: 0.5
+        platforms: [Uber Eats]
+        start_date: 2026-10-21
+
+  - name: mx_coyoacan_answers_ahead
+    inputs:
+      vacancy: mx-cdmx-coyoacan
+      name_on_application: Itzel Hernández Ruiz
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        You are Itzel Hernández Ruiz, 30, from Mexico City. You write casual Mexican Spanish.
+        - When you confirm your name, add in the same message that you could start el lunes and that you have your
+          own motorbike. Don't mention your license until you're asked about it.
+        - Driving license: valid CDMX license, for car and motorbike.
+        - You live in colonia Del Carmen, in Coyoacán, postal code 04100.
+        - Availability: part-time. Schedule: mornings and afternoons.
+        - Experience: three years with DiDi Food.
+        - Start date: Monday (el lunes).
+    metadata:
+      tags: [mx, grounded, burst]
+      status: completed
+      outcome: qualified
+      final_language: es
+      answers:
+        full_name: Itzel Hernández Ruiz
+        license: "yes"
+        location_id: mx-cdmx-coyoacan
+        availability: [part_time]
+        schedule: [morning, afternoon]
+        experience_years: 3
+        platforms: [DiDi Food]
+        start_date: 2026-10-26

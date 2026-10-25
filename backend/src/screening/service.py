@@ -103,6 +103,21 @@ def application_of(candidate: Candidate) -> Application:
     )
 
 
+def render_reminder(config: ClientConfig, key: str, state: ScreeningState, application: Application) -> list[str]:
+    """A reminder as tick() sends it. Mid-chat it picks up where the chat stopped: the next field to ask, or the recap.
+    The evals send it the same way."""
+    location = config.locations_by_id[application.vacancy_location_id]
+    locale = Locale.of(state.language, location.country)
+    stage = next(iter(state.still_to_ask), None)
+    return config.render(
+        key,
+        locale,
+        first_name=application.first_name,
+        city=location.city,
+        stage=config.label(locale, f"field_{stage}" if stage else "stage_recap"),
+    )
+
+
 async def store_template(
     session: AsyncSession, candidate_id: uuid.UUID, key: str, bubbles: list[str], quick_replies: Sequence[str] = ()
 ) -> list[Message]:
@@ -473,16 +488,7 @@ class ScreeningService:
                         continue
                     key, delays = reminders[candidate.status]
                     state = ScreeningState.model_validate(candidate.state)
-                    locale = Locale.of(state.language, location.country)
-                    # Mid-chat, the reminder picks up where the chat stopped: the next field to ask, or the recap.
-                    stage = next(iter(state.still_to_ask), None)
-                    bubbles = self.config.render(
-                        key,
-                        locale,
-                        first_name=application_of(candidate).first_name,
-                        city=location.city,
-                        stage=self.config.label(locale, f"field_{stage}" if stage else "stage_recap"),
-                    )
+                    bubbles = render_reminder(self.config, key, state, application_of(candidate))
                     sent.append((candidate.id, await store_template(session, candidate.id, key, bubbles)))
                     silence_began = candidate.last_outbound_at
                     assert silence_began is not None  # the due condition compares it

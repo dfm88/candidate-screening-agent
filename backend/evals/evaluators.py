@@ -89,7 +89,10 @@ class SavedAnswers(Evaluator[Persona, ScreeningRun, Expected]):
             "schedule": set(expected.schedule or []) or None,
             "experience_years": expected.experience_years,
             "platforms": {normalize(p) for p in expected.platforms or []},
-            "start_date": expected.start_date,
+            # With several accepted, the one saved is right when it's among them.
+            "start_date": answers.start_date
+            if isinstance(expected.start_date, list) and answers.start_date in expected.start_date
+            else expected.start_date,
         }
         checked = expected.model_fields_set
         wrong = [
@@ -99,6 +102,20 @@ class SavedAnswers(Evaluator[Persona, ScreeningRun, Expected]):
         ]
         score = 1 - len(wrong) / len(checked) if checked else 1.0
         return {"saved_answers": EvaluationReason(value=score, reason="; ".join(wrong) or None)}
+
+
+@dataclass
+class GroundedAnswers(Evaluator[Persona, ScreeningRun, Expected]):
+    """Nothing saved that the candidate didn't give: every field a turn saved was provided by then (the simulator's
+    labels, or the script's). Whether the value saved is the one they gave is the judge's call (saved_values)."""
+
+    def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        provided: set[FieldName] = set()
+        invented: list[str] = []
+        for number, (turn, saved) in enumerate(zip(ctx.output.turns, ctx.output.saved_by_turn(), strict=True), 1):
+            provided.update(turn.provided)
+            invented += [f"turn {number}: {field}={value}" for field, value in saved.items() if field not in provided]
+        return {"grounded": EvaluationReason(value=not invented, reason="; ".join(invented) or None)}
 
 
 # --- How the agent asks ------------------------------------------------------------------------------------------
@@ -249,6 +266,18 @@ DECISION_RUBRIC = (
     "requirement isn't met after a new answer. Taking a new answer and saying the team will see it is fine. Score 1.0 "
     "when every later reply agrees with the decision, 0.0 when any contradicts it."
 )
+# Judged in every conversation that saved something, scripted ones too: a fragment's saves are as real as a whole one's.
+SAVED_VALUES_RUBRIC = (
+    "Under each candidate turn, a 'Saved' line lists the answers the assistant saved in that turn, as the system "
+    "stored them, and the arguments it passed to save them. Each saved value must be what the candidate said up to "
+    "then, read in the input's date and country: nothing the candidate didn't say, nothing narrowed or widened (an "
+    "'any time' schedule is flexible, not every option; 'weekends' alone is not part-time), postal codes and names as "
+    "they wrote them, a relative date counted from today (a bare weekday is the next one, never today). An unclear "
+    "answer saved as yes or no is wrong. The restaurant named with an area is the system's lookup of the place or "
+    "postal code, not something the candidate has to say; where a field has fixed options, a nuance they can't hold "
+    "(how often, a preference) is no mismatch. Score 1.0 when every saved value holds, 0.0 when any was invented or "
+    "doesn't match what the candidate said."
+)
 SUMMARY_RUBRIC = (
     "The output is the part of a recruiter's summary that adds to the key data in the input, which the recruiter "
     "already sees: caveats to check before deciding, and notes worth knowing. Empty lists are right when the "
@@ -264,7 +293,8 @@ SUMMARY_RUBRIC = (
 class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
     """LLM judge for what code can't check. It sees the transcript, the country and the name, not the state dumps that
     LLMJudge would serialize from the whole output, so it grades the conversation the candidate saw. The summary is
-    graded against the transcript. A scripted case is a fragment, not a conversation: only its decision is judged."""
+    graded against the transcript. A scripted case is a fragment, not a conversation: only its decision and its saved
+    values are judged."""
 
     model: str
     model_settings: ModelSettings | None = None
@@ -284,6 +314,15 @@ class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
             name: judge_input_output(context, transcript, rubric, self.model, self.model_settings)
             for name, rubric in rubrics.items()
         }
+        if any(ctx.output.saved_by_turn()):
+            location = CONFIG.locations_by_id[ctx.inputs.vacancy]
+            gradings["saved_values"] = judge_input_output(
+                f"{context} Today: {ctx.inputs.now.astimezone(location.tz):%Y-%m-%d (%A)}.",
+                ctx.output.transcript(with_saves=True),
+                SAVED_VALUES_RUBRIC,
+                self.model,
+                self.model_settings,
+            )
         if ctx.output.summary and not ctx.inputs.script:
             # The summary adds to the key data (what the recruiter sees first), so the judge reads both. Today's date
             # too, as the summary agent does: a start date of today next to "right away" is no discrepancy.
