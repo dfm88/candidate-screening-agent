@@ -236,7 +236,7 @@ class ScreeningState(BaseModel):
 
 
 def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldName, str]:
-    """Saved answers as short readable values, for the agent's context and for tool results."""
+    """Saved answers as short readable values, for the agent's context, tool results and the key data."""
     answers = state.answers
     described: dict[FieldName, str] = {}
     if answers.full_name:
@@ -245,11 +245,13 @@ def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldNam
         note = f" ({answers.license_note})" if answers.license_note else ""
         described[FieldName.LICENSE] = f"{answers.license}{note}"
     if answers.area:
-        where = answers.area.postal_code or answers.area.place
+        where = ", ".join(value for value in (answers.area.postal_code, answers.area.place) if value)
         if answers.area.location_id is None:
-            described[FieldName.SERVICE_AREA] = f"outside every service area ({where})"
+            described[FieldName.SERVICE_AREA] = f"lives at {where}, outside every service area"
         else:
-            described[FieldName.SERVICE_AREA] = f"{config.locations_by_id[answers.area.location_id].name} ({where})"
+            # "Madrid Chamberí (28015)" read as "28015 is in Chamberí" to the models: name the restaurant as one.
+            restaurant = config.locations_by_id[answers.area.location_id].name
+            described[FieldName.SERVICE_AREA] = f"lives at {where}, in the area of the {restaurant} restaurant"
     if answers.availability:
         described[FieldName.AVAILABILITY] = ", ".join(answers.availability)
     if answers.schedule:
@@ -401,12 +403,6 @@ def key_data(state: ScreeningState, config: ClientConfig) -> KeyData:
         field: saved.get(field) or (f"unclear: {state.unclear[field]}" if field in state.unclear else "not answered")
         for field in FIELD_ORDER
     }
-    area = state.answers.area
-    if area and area.location_id:
-        # "Madrid Chamberí (28015)" read as "28015 is in Chamberí" to the summary agent: name the restaurant as one.
-        where = ", ".join(value for value in (area.postal_code, area.place) if value)
-        restaurant = config.locations_by_id[area.location_id].name
-        answers[FieldName.SERVICE_AREA] = f"lives at {where}, in the area of the {restaurant} restaurant"
     return KeyData(
         answers=answers,
         outcome=state.outcome,

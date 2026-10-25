@@ -24,14 +24,25 @@ class Settings(BaseSettings):
     llm_content_logging: bool = False
     # Built frontend, served by the API in the container; absent in local dev where Vite serves it.
     static_dir: Path | None = None
-    # PydanticAI model strings. The model for live turns, and the fallbacks tried in order when it fails (a JSON list
-    # in the env). The primary runs on Vertex AI in the EU; the last fallback answers only when Vertex fails.
-    screening_model: str = "google-cloud:gemini-3.8-flash"
-    screening_fallback_models: list[str] = ["openai:gpt-6-luna"]
+    # PydanticAI model strings: the model for live turns, and the fallbacks tried in order when it fails (a JSON list
+    # in the env). The demo calls the providers' APIs; a fallback from another provider means one outage can't take out
+    # both (README, "Why GPT-5.6 terra"). Processing in the EU means google-cloud:… models on Vertex AI.
+    screening_model: str = "openai:gpt-5.6-terra"
+    screening_fallback_models: list[str] = ["google:gemini-3.8-flash"]
     # Vertex AI location for google-cloud: models. `eu` keeps processing in the EU (multi-region endpoint).
     google_cloud_location: str = "eu"
     google_cloud_project: str | None = None
     max_history_messages: int = 50
+    # Operational bounds on a live turn (README, "Timeouts, retries and limits"). They don't change what the model
+    # answers, so they stay out of the model settings and the prompt version, and evals run without them.
+    # One deadline per request to one model, over every SDK retry; the fallback model gets a fresh one.
+    request_timeout: float = 10
+    # The whole turn: room for two fallbacks in a two-request turn (two primary timeouts, plus the fallback at its p99
+    # in the evals, 7 s, twice: 34 s).
+    turn_timeout: float = 35
+    # Model requests per turn. The evals' largest legitimate turn needed 5 (a postal code, a request for a person and a
+    # question in one message); a runaway loop of invented saves needed 9.
+    turn_request_limit: int = 7
     # How long a burst of candidate messages may take to settle before one turn answers them all.
     chat_debounce_seconds: float = 1.5
     # Required by the public apply form when set (the reviewer link carries it); unset means no check.

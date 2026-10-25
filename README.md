@@ -24,6 +24,8 @@ npm install
 npm run dev                               # http://localhost:5173, proxies /api to :8000
 ```
 
+**Git hooks:** `uv run --directory backend pre-commit install` once. Before each commit they run ruff, ty, oxlint, tsc and a check for leftover debugger calls. The tests are run by hand.
+
 **Tests:** `cd backend && uv run pytest`. The API tests run the app against the compose Postgres, in a `screening_test` database they create with the migrations; the LLM is stubbed, so tests never call a model.
 
 **Configuration is environment-only.** `uv run --env-file .env` loads `backend/.env` into the process environment. The app settings, the Logfire SDK (`LOGFIRE_TOKEN`) and Google auth (`CLOUDSDK_CONFIG`) all read it from there, so there's no second loading mechanism to keep in sync. Logfire and GCP are optional: without a token, traces stay on the console. The frontend has no env file, because anything Vite exposes ends up in the public bundle.
@@ -45,15 +47,38 @@ curl -N localhost:8000/api/chat/TOKEN/events             # message / typing / st
 curl -sX POST localhost:8000/api/chat/TOKEN/messages -H 'content-type: application/json' -d '{"text": "Empezar", "client_id": "1"}'
 ```
 
+**A chat is one application.** The same person applying twice gets two chats; a WhatsApp channel, where the phone number is the identity, needs a person table separate from applications.
+
 Each conversation has one worker in the API process. It waits for a burst of messages to settle (`CHAT_DEBOUNCE_SECONDS`), answers them in one turn, and stores the turn (the model messages, prompt version, models, usage) before publishing the reply. If every model fails, the candidate gets the "give me a moment" template once and the messages stay pending: the next message or a restart retries them. When the screening ends, the summary agent writes the recruiter's caveats and notes; the key data (every answer, the outcome and its reasons) are built by code from the saved state.
 
 **The candidate pages** (`frontend/`: React, Vite, Tailwind, React Router, TanStack Query). `/apply` is the public apply form; with `APPLY_ACCESS_CODE` set, the link to share is `/apply?code=…`, which fills the code in. Its confirmation opens the chat, or shows a QR code to continue on a phone. `/chat/TOKEN` is the mobile-first chat: it renders the event stream (and replays what it missed after a reconnect), shows the first message's suggested replies, a typing indicator, and closes the input once the candidate withdraws. `frontend/src/api.ts` mirrors `contract.py`.
 
-**Models and where candidate data goes.** Live turns run on Gemini through Vertex AI in the `eu` multi-region, so processing stays in the EU. If that model fails (an outage, or a run of rate limits), PydanticAI's `FallbackModel` hands the message to the last fallback, an OpenAI model through OpenAI's API, which is outside the EU. It keeps a live chat answering, and it only sees data when the primary fails. Whether that's acceptable is a client decision (open question 4 in the process design); the EU-only alternatives are a second EU model as the fallback, or Claude in the EU once the project has quota. Both models are set in `.env` (`SCREENING_MODEL`, `SCREENING_FALLBACK_MODELS`).
+**Models and where candidate data goes.** The demo's live turns run on OpenAI's GPT-5.6 terra through OpenAI's API. If it fails (an outage, a run of rate limits, or a request past `REQUEST_TIMEOUT`), PydanticAI's `FallbackModel` hands the message to Gemini 3.8 Flash through the Gemini API: another provider, so one outage can't take out both. Neither keeps processing in the EU, which is fine for the demo's synthetic data. For real candidates, the EU path is Gemini on Vertex AI in the `eu` multi-region (`google-cloud:` models); on 2026-10-25 it stalled under shared quota (see "Why GPT-5.6 terra"), so it needs reserved capacity before it can carry live chats. Whether data may leave the EU is a client decision (open question 4 in the process design). Both models are set in `.env` (`SCREENING_MODEL`, `SCREENING_FALLBACK_MODELS`), with `OPENAI_API_KEY` and `GOOGLE_API_KEY`.
 
-To run without our Google Cloud project, set `SCREENING_MODEL=google:gemini-3.8-flash`, `SCREENING_FALLBACK_MODELS=[]` and `GOOGLE_API_KEY`. That's the same model through the Gemini API. This path is for local testing with test data only.
+With one key, set `SCREENING_FALLBACK_MODELS=[]`: `OPENAI_API_KEY` alone runs the default model. Use these paths with test data only.
 
 To run the production image locally: `docker compose --profile app up --build` (http://localhost:8080). It picks up `backend/.env` if present.
+
+## Timeouts, retries and limits
+
+A slow model must not leave a candidate waiting. A live turn has three bounds, all set in `.env`. They don't change what the model answers, so they're passed at run time and stay out of the prompt version.
+
+| Bound | Default | What it does |
+|---|---|---|
+| `REQUEST_TIMEOUT` | 10 s | One deadline per request to one model, over every attempt the provider SDK makes (PydanticAI's `request_timeout`; the SDK's own `timeout` applies per attempt and each retry re-arms it). When it runs out, `FallbackModel` moves to the next model, which gets a fresh deadline. |
+| `TURN_TIMEOUT` | 35 s | The whole turn (`agent.run(timeout=…)`). `FallbackModel` tries the primary first on every request, so a two-request turn that falls back twice takes two request deadlines plus two fallback answers: 10 + 7 + 10 + 7 s with the fallback at its p99 in the evals. |
+| `TURN_REQUEST_LIMIT` | 7 | Model requests per turn (`UsageLimits.request_limit`). In the evals, a legitimate turn needed at most 5 (a postal code, a request for a person and a question in one message); the one that needed 9 was a model saving invented answers in a loop. |
+
+**Retries**, from the inside out:
+- **Provider SDK:** its defaults, inside the request deadline. PydanticAI's OpenAI and Anthropic clients retry twice; its Google client doesn't retry.
+- **Fallback:** any model API error, a timed-out request included, goes to the next model in `SCREENING_FALLBACK_MODELS`.
+- **Agent:** a tool call with invalid arguments goes back to the model with the validation error, once per tool (PydanticAI's default); a second invalid call fails the turn.
+
+**What the candidate sees when a turn fails** (every model failed, the turn timed out, or it hit the request limit): the "give me a moment" template, once. Their messages stay pending, and their next message or a restart retries them.
+
+**Spend.** There's no per-conversation budget in code; the request limit only bounds one turn. In production, spend is watched outside the app: a GCP budget alert (see Deployment) and a Logfire alert on model cost.
+
+The summary agent gets the same request deadline. Evals run without the deadlines and without a fallback, so the latency they report is the model's own.
 
 ## Evals
 
@@ -70,9 +95,9 @@ The process design is enforced by evals, not unit tests. `backend/evals/` (Pydan
 
 ```bash
 cd backend
-uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash            # one model
-uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash \
-    --fallback openai:gpt-6-luna                                                                       # the demo config
+uv run --group evals --env-file .env python -m evals.run --model openai:gpt-5.6-terra                     # one model
+uv run --group evals --env-file .env python -m evals.run --model openai:gpt-5.6-terra \
+    --fallback google:gemini-3.8-flash                                                                 # the demo config
 uv run --group evals --env-file .env python -m evals.run --model A --model B --repeat 2                # the arena
 uv run --group evals --env-file .env python -m evals.run --model A \
     --case scripted_mx_foreign_license_not_a_no --repeat 5                                             # one scripted case
@@ -80,35 +105,39 @@ uv run --group evals --env-file .env python -m evals.run --model A \
 
 `--settings '{"temperature": 0.2}'` merges into the model settings. Rate limits are retried with backoff (Pydantic Evals' `retry_task`), never handed to another model, so a row measures one config. Results are appended to [`backend/evals/results/arena.md`](backend/evals/results/arena.md); full transcripts land in `backend/evals/results/transcripts/` (not committed). The simulator and the judge only see synthetic data, so they may run outside the EU.
 
-### Why Gemini 3.8 Flash
+### Why GPT-5.6 terra, with Gemini 3.8 Flash as the fallback
 
-The arena on the final prompt (9 cases × 2 runs per model, 2026-10-24; full table in [`arena.md`](backend/evals/results/arena.md)):
+The round on 2026-10-25 (prompt `da96a191`; full tables in [`arena.md`](backend/evals/results/arena.md)) had two stages. First a gate: the scripted foreign-license case 5 times per config. A license from another country whose validity the candidate doesn't know must end up *unclear* after two tries, never a "no". Then the configs that passed ran the full set (10 cases × 2).
 
-| | Gemini 3.8 Flash | Gemini 3.5 Flash | Gemini 3.5 Flash-Lite | gpt-6-luna |
-|---|---|---|---|---|
-| Runs in the EU | yes | yes | yes | no |
-| Thinking sent for `thinking=False` | `thinking_level` LOW (3.8 has no MINIMAL) | MINIMAL | MINIMAL | reasoning effort none |
-| All process checks | 0.97 | 0.94 | 0.97 | 0.99 |
-| Outcome right | 1.00 | 1.00 | **0.94** | 1.00 |
-| Nothing asked again | 1.00 | **0.67** | 0.94 | 0.94 |
-| At most two tries | 1.00 | 1.00 | **0.89** | 1.00 |
-| No acknowledgement on its own | 0.72 | 0.83 | 0.94 | 1.00 |
-| Judge: tone / naturalness / language | 0.86 / 0.83 / 0.93 | 0.84 / 0.80 / 0.85 | 0.77 / 0.81 / 0.90 | 0.83 / 0.80 / 0.90 * |
-| p50 / p95 per turn | 3.2 s / 10.7 s | 1.9 s / 2.5 s | 1.2 s / 1.9 s | 3.2 s / 6.1 s |
-| Cost per completed screening | $0.047 | $0.045 | $0.010 | $0.001 |
-| Input read from the prompt cache | 2% | 61% | 55% | 97% |
+| Gate: license case ×5 | Thinking sent | Passed |
+|---|---|---|
+| Gemini 3.8 Flash, on Vertex AI `eu` and on the Gemini API | `thinking_level` LOW | 5/5, 5/5 |
+| GPT-5.6 terra | reasoning effort none | 5/5 |
+| gpt-6-luna | reasoning effort none / low | 5/5 / **3/5** |
+| Claude Haiku 5.5, prompt cache on | thinking disabled / adaptive at effort low | **3/5** / **2/5** |
+
+| Full set | GPT-5.6 terra | Gemini 3.8 Flash (Gemini API) | gpt-6-luna |
+|---|---|---|---|
+| Outcome right | 1.00 | 1.00 | 1.00 |
+| All process checks | 1.00 | 0.98 | 0.99 |
+| Judge: tone / naturalness / language | 0.93 / 0.82 / 1.00 * | 0.91 / 0.86 / 1.00 | 0.93 / 0.79 / 0.99 * |
+| p50 / p95 per turn | 2.6 s / 3.8 s | 4.0 s / 7.0 s | 3.0 s / 5.5 s |
+| Request p99 | 2.4 s | 7.0 s | 3.3 s |
+| Input read from the prompt cache | 97% | 7% | 97% |
+| Cost per completed screening | $0.022 | $0.057 | $0.001 |
 
 \* judged by a model of the same family.
 
-- **Gemini 3.8 Flash is the only EU model with no process or outcome errors.** Its misses are style only (a closing "Muchas gracias" sent as its own message), and it has the best judge scores.
-- **3.5 Flash-Lite** is 3× faster and 4.6× cheaper, but once turned "I don't know if my Colombian license is valid in Mexico" into a "no" (a wrongful knockout) and asked for an area three times. **3.5 Flash** saves the name from the application before the candidate confirms it.
-- **gpt-6-luna** scores best on the checks and costs 40× less, but runs outside the EU, so it's the last fallback rather than the primary (open question 4).
-- **The cost of 3.8 Flash is mostly uncached input.** On Vertex AI it read only 2% of its input from the implicit prompt cache. Google documents a 4,096-token minimum for 3.8 Flash, and our static prefix (instructions and tools) is about 3.4K tokens: in the evals it never hit below that, and only 9% of its calls hit above it. Identical 6.2K-token requests cached nothing on Vertex `eu` or `global`, and on the Gemini API they cached 4,435 tokens on 3 of 9 requests. So the gap comes from the model's best-effort implicit cache, not from Vertex. We don't pad the prompt to reach the minimum. The history is append-only, so the models that cache keep their prefix: PydanticAI's cache-collapse detector stays at zero for them; Flash-Lite's collapses come from Gemini's best-effort implicit cache.
-- **Latency is the trade-off.** p50 is about 3 s, but p95 varied between 10 and 16 s across runs of 3.8 Flash on Vertex's shared capacity. The arena runs again on the final prompt before the demo.
+- **Models that save answers the candidate never gave are out.** gpt-6-luna and Haiku 5.5 at low effort did: a license "yes" saved during the name question, before the license was asked. In an earlier run, luna invented a whole profile from "Sure, go ahead" and closed it as qualified. The checks only catch this when the field comes up again, so luna's 0.99 understates it. That's why it's out despite costing 18× less than terra.
+- **terra and 3.8 Flash tie on the checks and the judge.** terra is faster and 2.6× cheaper, mostly because OpenAI's prompt cache holds the append-only history (97% of input), while 3.8 Flash's best-effort implicit cache read 7%. 3.8 Flash's misses are style only: two questions in a turn, a "Gracias, Luis." ("Thanks, Luis.") sent on its own.
+- **3.8 Flash is the fallback:** another provider, so one outage can't take out both. Its request p99 (7.0 s) fits the 10 s request deadline.
+- **Not Vertex `eu` for the demo.** The same day, 3.8 Flash on Vertex `eu` (dynamic shared quota) took up to 85 s per turn, then requests hung for 40 minutes; the Gemini API answered in about 2 s. The EU path needs reserved capacity first.
+- **The round before** (2026-10-24, EU models only) ruled out Gemini 3.5 Flash (it saved the name from the application before the candidate confirmed it) and 3.5 Flash-Lite (a wrongful license knockout, and an area asked three times).
+- **Cost:** about $22 per 1,000 completed screenings on terra, against about $57 on 3.8 Flash at its launch price. The summary agent adds one call per screening.
 
 ## Deployment (GCP)
 
-A single Cloud Run service runs the API and the built frontend, with Cloud SQL (Postgres 18), Secret Manager, and Vertex AI in the `eu` multi-region.
+A single Cloud Run service runs the API and the built frontend, with Cloud SQL (Postgres 18) and Secret Manager. The models are called through OpenAI's API and the Gemini API (keys in Secret Manager); Vertex AI stays enabled for the EU path.
 
 ```bash
 cp deploy.env.example deploy.env   # set GCP_PROJECT (and CLOUDSDK_CONFIG if you use a dedicated gcloud config)

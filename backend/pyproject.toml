@@ -20,8 +20,10 @@ dependencies = [
 dev = [
     "httpx>=0.28",
     "ipdb>=0.13.13",
+    "pre-commit==4.7.0",
     "pytest>=8.4",
     "ruff>=0.14",
+    "ty==0.0.91",
 ]
 evals = [
     "pydantic-evals>=2.61,<3",

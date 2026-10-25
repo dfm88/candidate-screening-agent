@@ -13,7 +13,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelResponse, RunContext, TextPart, ToolCallPart
+from pydantic_ai import Agent, ModelMessage, ModelRequest, ModelResponse, RunContext, TextPart, ToolCallPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import increment_eval_metric
@@ -90,6 +90,8 @@ class Turn(BaseModel):
     # model_name of every response in the turn: with a fallback, this shows which model answered.
     models: list[str]
     seconds: float
+    # Each model request's latency: the turn's own time minus the tools and the agent loop.
+    request_seconds: list[float] = []
     # The state after the turn, i.e. when the reply was sent.
     state: ScreeningState
     input_tokens: int
@@ -189,7 +191,7 @@ def make_task(
             first_name=application.first_name,
             city=location.city,
         )
-        stored_turns = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
+        stored_turns: list[list[ModelMessage]] = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
         state = ScreeningState(status=Status.INVITED, language=application.language)
         conversation_id = f"eval-{uuid.uuid4().hex[:8]}"
         turns: list[Turn] = []
@@ -203,6 +205,10 @@ def make_task(
                     deps=persona,
                     model=simulator_model,
                     model_settings=SIMULATOR_SETTINGS,
+                )
+                increment_eval_metric(
+                    "simulator_cost_usd",
+                    sum(response_cost(m) or 0 for m in candidate.new_messages() if isinstance(m, ModelResponse)),
                 )
                 if turns:
                     turns[-1].asked_about = candidate.output.asked_about
@@ -228,12 +234,20 @@ def make_task(
 
             responses = [message for message in result.messages if isinstance(message, ModelResponse)]
             costs = [response_cost(response) for response in responses]
+            # PydanticAI stamps a request when it's sent and a response when it arrives, both on the local clock.
+            sent_at = [message.timestamp for message in result.messages if isinstance(message, ModelRequest)]
+            request_seconds = [
+                (response.timestamp - sent).total_seconds()
+                for sent, response in zip(sent_at, responses, strict=True)
+                if sent is not None
+            ]
             turn = Turn(
                 candidate=messages,
                 reply=result.reply,
                 tool_calls=[part.tool_name for r in responses for part in r.parts if isinstance(part, ToolCallPart)],
                 models=[response.model_name or "unknown" for response in responses],
                 seconds=seconds,
+                request_seconds=request_seconds,
                 state=state,
                 input_tokens=result.usage.input_tokens,
                 cache_read_tokens=result.usage.cache_read_tokens,

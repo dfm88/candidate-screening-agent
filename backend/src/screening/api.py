@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from screening import db
+from screening.channels import WebChatChannel
 from screening.contract import (
     ApplicationCreated,
     ApplicationRequest,
@@ -33,6 +34,14 @@ def service_of(request: Request) -> ScreeningService:
 
 
 Service = Annotated[ScreeningService, Depends(service_of)]
+
+
+def web_chat_of(request: Request) -> WebChatChannel:
+    # These routes are the web chat's adapter, so they use its streams; the service only knows the Channel Protocol.
+    return request.app.state.web_chat
+
+
+WebChat = Annotated[WebChatChannel, Depends(web_chat_of)]
 
 
 async def chat_candidate(token: str, service: Service) -> Candidate:
@@ -109,12 +118,13 @@ async def send_message(body: CandidateMessage, candidate: ChatCandidate, service
 async def chat_events(
     candidate: ChatCandidate,
     service: Service,
+    web_chat: WebChat,
     last_event_id: Annotated[int | None, Header()] = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """The chat's messages since Last-Event-ID (all of them on first connect), then live events. Reconnects and
     redeploys lose nothing: every message is in the database before it's published."""
     # Subscribe before reading the database, so a message stored in between arrives live instead of being lost.
-    with service.channel.subscribe(candidate.id) as live:
+    with web_chat.subscribe(candidate.id) as live:
         sent = last_event_id or 0
         for message in await service.messages_after(candidate.id, sent):
             yield ServerSentEvent(event="message", id=str(message.id), data=message)

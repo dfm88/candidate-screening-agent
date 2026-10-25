@@ -118,7 +118,7 @@ def test_several_answers_at_once_are_saved_and_the_rest_listed_in_order() -> Non
     state, result = save(new)
     assert result.saved == {
         FieldName.LICENSE: "yes",
-        FieldName.SERVICE_AREA: "Madrid Chamberí (28010)",
+        FieldName.SERVICE_AREA: "lives at 28010, in the area of the Madrid Chamberí restaurant",
         FieldName.AVAILABILITY: "weekends",
     }
     assert result.still_to_ask == [FieldName.FULL_NAME, FieldName.SCHEDULE, FieldName.EXPERIENCE, FieldName.START_DATE]
@@ -128,13 +128,14 @@ def test_several_answers_at_once_are_saved_and_the_rest_listed_in_order() -> Non
 def test_postal_code_outside_every_area_is_a_knockout() -> None:
     state, result = save(NewAnswers(postal_code="28001"))
     assert state.knockout is NotQualifiedReason.OUTSIDE_SERVICE_AREA
+    assert result.saved[FieldName.SERVICE_AREA] == "lives at 28001, outside every service area"
     assert result.knockout and "finish_screening" in result.knockout
 
 
 def test_the_same_postal_code_is_read_in_the_vacancy_country() -> None:
     _, in_mexico = save(NewAnswers(postal_code="44160"), app=CDMX)
     _, in_spain = save(NewAnswers(postal_code="44160"))
-    assert in_mexico.saved[FieldName.SERVICE_AREA] == "Guadalajara Americana (44160)" and in_mexico.knockout is None
+    assert in_mexico.knockout is None and "Guadalajara Americana" in in_mexico.saved[FieldName.SERVICE_AREA]
     assert in_spain.knockout is not None
 
 
@@ -154,7 +155,7 @@ def test_unusable_area_answers_are_not_saved_and_say_what_to_ask(new: NewAnswers
 
 def test_a_known_place_saves_the_matching_restaurant_even_if_not_the_applied_one() -> None:
     _, result = save(NewAnswers(place="Obispado"), app=CDMX)
-    assert result.saved[FieldName.SERVICE_AREA] == "Monterrey Centro (Obispado)"
+    assert result.saved[FieldName.SERVICE_AREA] == "lives at Obispado, in the area of the Monterrey Centro restaurant"
 
 
 def test_relative_dates_resolve_in_the_restaurant_time_zone() -> None:

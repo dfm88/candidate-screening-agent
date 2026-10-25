@@ -139,8 +139,16 @@ def arena_row(report: EvaluationReport, thinking: str, judged_by_own_family: boo
     row |= {
         "p50 s": show(numbers.get("p50 per turn"), 1),
         "p95 s": show(numbers.get("p95 per turn"), 1),
+        "request p50 / p95 / p99 s": " / ".join(show(numbers.get(f"request p{p}"), 1) for p in (50, 95, 99)),
+        "requests per turn (mean, max)": f"{show(numbers.get('requests per turn'))}, "
+        f"{show(numbers.get('most requests in a turn'), 0)}",
         "USD / completed": show(numbers.get("cost per completed screening"), 4),
         "cache share": show(numbers.get("cache share")),
+        "agent tokens: input / cache read / output": " / ".join(
+            f"{numbers.get(f'agent {kind} tokens', 0):,.0f}" for kind in ("input", "cache read", "output")
+        ),
+        "spend: agent / simulator USD": f"{show(numbers.get('agent spend'), 3)} / "
+        f"{show(numbers.get('simulator spend'), 3)}",
         "cache collapses": show(scores.get("cache_collapses")),
         "responses by model": models,
     }
@@ -194,6 +202,11 @@ async def main(args: argparse.Namespace) -> None:
     simulator_model = model_from_string(args.simulator, settings)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
     (RESULTS / "transcripts").mkdir(parents=True, exist_ok=True)
+    header = (
+        f"## {stamp} · prompt {version} · {len(dataset.cases)} cases × {args.repeat}\n\n"
+        f"Simulator {args.simulator}, judge {JUDGE}. Checks and scores are means over runs (1.00 = always). "
+        "* = judged by a model of the same family, which may favour its style.\n\n"
+    )
 
     async def run_experiment(model_string: str) -> dict[str, str]:
         """One config, one row. Each runs in its own task, so its agent.override doesn't leak into the others."""
@@ -216,23 +229,18 @@ async def main(args: argparse.Namespace) -> None:
         # The settings are in the name, so two configs of one model started in the same minute get separate files.
         write_transcripts(report, RESULTS / "transcripts" / f"{stamp}-{re.sub(r'[^\w.-]+', '_', name)}.md")
         judge_family = JUDGE.partition(":")[0]
-        return arena_row(
+        row = arena_row(
             report,
             thinking_sent(model_from_string(model_string, settings), model_settings),
             any(m.startswith(judge_family + ":") for m in [model_string, *args.fallback]),
         )
+        # Each config appends its row as soon as it finishes, so a provider that hangs can't take the others' with it.
+        with (RESULTS / "arena.md").open("a", encoding="utf-8") as results:
+            results.write(f"{header}{markdown_table([row])}\n\n")
+        return row
 
     rows = await asyncio.gather(*(run_experiment(model_string) for model_string in args.model))
-    table = markdown_table(rows)
-    summary = (
-        f"## {stamp} · prompt {version} · {len(dataset.cases)} cases × {args.repeat}\n\n"
-        f"Simulator {args.simulator}, judge {JUDGE}. Checks and scores are means over runs (1.00 = always). "
-        "* = judged by a model of the same family, which may favour its style.\n\n"
-        f"{table}\n"
-    )
-    print("\n" + summary)
-    with (RESULTS / "arena.md").open("a", encoding="utf-8") as results:
-        results.write(summary + "\n")
+    print("\n" + header + markdown_table(rows))
 
 
 if __name__ == "__main__":

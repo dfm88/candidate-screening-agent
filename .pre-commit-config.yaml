@@ -1,0 +1,60 @@
+# Checks before every commit. Install once: `uv run --directory backend pre-commit install`. The tests stay a manual
+# step (AGENTS.md): the API tests need the compose Postgres.
+# The backend tools run through uv, so they're the versions in backend/uv.lock and read backend/pyproject.toml: one pin
+# per tool, not a second one here that could drift.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: debug-statements # ipdb, pdb, breakpoint() left in Python
+      - id: detect-private-key
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+        # Appended by the eval runner.
+        exclude: ^backend/evals/results/
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: ^backend/evals/results/
+
+  - repo: local
+    hooks:
+      - id: uv-lock
+        name: uv.lock matches pyproject.toml
+        language: unsupported
+        entry: uv lock --check --directory backend
+        files: ^backend/(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+      - id: ruff-check
+        name: ruff check
+        language: unsupported
+        entry: uv run --directory backend ruff check --fix .
+        files: ^backend/.*\.py$
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format
+        language: unsupported
+        entry: uv run --directory backend ruff format .
+        files: ^backend/.*\.py$
+        pass_filenames: false
+      - id: ty
+        name: ty check
+        language: unsupported
+        entry: uv run --directory backend --group evals ty check
+        files: ^backend/
+        pass_filenames: false
+      - id: oxlint
+        name: oxlint
+        language: unsupported
+        # --deny-warnings (in the npm script): a leftover `debugger` is only a warning by default.
+        entry: npm --prefix frontend run lint
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: false
+      - id: tsc
+        name: tsc
+        language: unsupported
+        entry: bash -c 'cd frontend && npx --no-install tsc -b'
+        files: ^frontend/
+        pass_filenames: false

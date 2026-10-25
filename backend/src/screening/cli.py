@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 
 import logfire
-from pydantic_ai import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart
 
 from screening.agent import build_model, history_from_turns, prompt_version, run_turn
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Language, Locale, Settings, load_client_config
@@ -39,7 +39,7 @@ async def chat(vacancy: str, name: str, language: Language, show_tools: bool) ->
     for bubble in first_message:
         print(f"{config.persona_name}> {bubble}\n")
     # Our first message is part of the conversation the agent sees, like any message we send.
-    turns = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
+    turns: list[list[ModelMessage]] = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
     state = ScreeningState(status=Status.INVITED, language=language)
 
     for line in sys.stdin:

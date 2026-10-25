@@ -15,10 +15,17 @@ from pydantic_evals.evaluators.report_evaluator import ReportEvaluatorContext
 from pydantic_evals.reporting.analyses import ReportAnalysis, ScalarResult, TableResult
 
 from evals.task import CONFIG, Expected, Persona, ScreeningRun
+from screening import domain
 from screening.config import Country
 from screening.domain import FieldName, ScreeningState, Status
 
 Context = EvaluatorContext[Persona, ScreeningRun, Expected]
+
+
+def expected_of(ctx: Context) -> Expected:
+    # Pydantic Evals types metadata as optional; every case in cases.yaml has its expectations there.
+    assert ctx.metadata is not None, f"case {ctx.name} has no expectations in its metadata"
+    return ctx.metadata
 
 
 def normalize(text: str) -> str:
@@ -38,7 +45,7 @@ class OutcomeMatches(Evaluator[Persona, ScreeningRun, Expected]):
     """Status, outcome, review reasons, unclear fields and the talent-pool answer: what the recruiter acts on."""
 
     def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
-        expected, state = ctx.metadata, ctx.output.state
+        expected, state = expected_of(ctx), ctx.output.state
         actual = {
             "status": state.status,
             "outcome": state.outcome,
@@ -62,7 +69,7 @@ class SavedAnswers(Evaluator[Persona, ScreeningRun, Expected]):
     """Share of the expected answers saved as the candidate gave them."""
 
     def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
-        expected, answers = ctx.metadata.answers, ctx.output.state.answers
+        expected, answers = expected_of(ctx).answers, ctx.output.state.answers
         experience = answers.experience
         actual = {
             "full_name": answers.full_name and normalize(answers.full_name),
@@ -180,7 +187,7 @@ class SavedLanguage(Evaluator[Persona, ScreeningRun, Expected]):
     language is the judge's call (language_quality): word-list heuristics gave false positives."""
 
     def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
-        saved, wanted = ctx.output.state.language, ctx.metadata.final_language
+        saved, wanted = ctx.output.state.language, expected_of(ctx).final_language
         return {"saved_language": EvaluationReason(value=saved == wanted, reason=None if saved == wanted else saved)}
 
 
@@ -225,8 +232,9 @@ RUBRICS = {
     "robotic, condescending or over-enthusiastic; it never assumes the candidate's gender. Score 1.0 when every "
     "assistant message fits, lower for each lapse.",
     "naturalness": "The assistant's messages read like chat messages a person sends from a phone: short and varied, "
-    "no stock phrase repeated turn after turn, nothing form-like or email-like, one thing at a time. Score 1.0 when "
-    "natural throughout, lower for each stilted or repetitive message.",
+    "no stock phrase repeated turn after turn, nothing form-like or email-like, one thing at a time. The recap before "
+    "the close is the one place for a short list of the answers, as the process requires: don't count it as "
+    "form-like. Score 1.0 when natural throughout, lower for each stilted or repetitive message.",
     "language_quality": "Each assistant reply is in the language of the candidate's last full sentence, Spanish or "
     "English (a lone word like 'ok' doesn't switch it), and is fluent and correct, with no grammar or spelling "
     "mistakes. In Spanish it uses the variant of the country of work given in the input (Spain or Mexico), with tú, "
@@ -234,10 +242,13 @@ RUBRICS = {
     "or each error.",
 }
 SUMMARY_RUBRIC = (
-    "The output is a recruiter's summary of the chat in the input. Every caveat and note comes from something the "
-    "candidate said in the transcript; nothing in it is missing from the transcript or contradicts it, and it makes "
-    "no guess about the person (reliability, motivation, age, origin, gender). Score 1.0 when every item holds, lower "
-    "for each item that doesn't."
+    "The output is the part of a recruiter's summary that adds to the key data in the input, which the recruiter "
+    "already sees: caveats to check before deciding, and notes worth knowing. Empty lists are right when the "
+    "transcript holds nothing the key data lack; what the key data already say, in any wording, is no omission. "
+    "Each item must come from something the candidate said in the transcript, must not contradict it or restate the "
+    "key data, and must make no guess about the person (reliability, motivation, age, origin, gender). Score 1.0 when "
+    "every item holds and nothing the recruiter should know beyond the key data is left out; lower for each item that "
+    "breaks a rule and for each such omission."
 )
 
 
@@ -265,9 +276,16 @@ class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
             for name, rubric in RUBRICS.items()
         }
         if ctx.output.summary:
-            summary = ctx.output.summary.model_dump_json(indent=2)
+            # The summary adds to the key data (what the recruiter sees first), so the judge reads both. Today's date
+            # too, as the summary agent does: a start date of today next to "right away" is no discrepancy.
+            key_data = domain.key_data(ctx.output.state, CONFIG).model_dump_json(indent=2)
+            today = f"{ctx.inputs.now.astimezone(CONFIG.locations_by_id[ctx.inputs.vacancy].tz):%Y-%m-%d (%A)}"
             gradings["summary"] = judge_input_output(
-                transcript, summary, SUMMARY_RUBRIC, self.model, self.model_settings
+                f"<today>{today}</today>\n<key_data>\n{key_data}\n</key_data>\n<transcript>\n{transcript}\n</transcript>",
+                ctx.output.summary.model_dump_json(indent=2),
+                SUMMARY_RUBRIC,
+                self.model,
+                self.model_settings,
             )
         results = await asyncio.gather(*gradings.values())
         return {
@@ -281,8 +299,9 @@ class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
 
 @dataclass
 class ArenaNumbers(ReportEvaluator[Persona, ScreeningRun, Expected]):
-    """p50/p95 latency per turn, cost per completed screening, share of input tokens read from the cache, and which
-    model answered (it matters with a fallback)."""
+    """p50/p95 latency per turn, latency per model request and requests per turn (they set the timeouts in
+    settings.py), cost per completed screening, share of input tokens read from the cache, and which model answered (it
+    matters with a fallback)."""
 
     def evaluate(self, ctx: ReportEvaluatorContext[Persona, ScreeningRun, Expected]) -> list[ReportAnalysis]:
         runs = [case.output for case in ctx.report.cases]
@@ -290,6 +309,9 @@ class ArenaNumbers(ReportEvaluator[Persona, ScreeningRun, Expected]):
         if len(turns) < 2:
             return []
         seconds = sorted(turn.seconds for turn in turns)
+        request_seconds = [value for turn in turns for value in turn.request_seconds]
+        request_percentiles = statistics.quantiles(request_seconds, n=100) if len(request_seconds) > 1 else []
+        requests = [len(turn.models) for turn in turns]
         completed = sum(run.state.status is Status.COMPLETED for run in runs)
         costs = [turn.cost_usd for turn in turns]
         input_tokens = sum(turn.input_tokens for turn in turns)
@@ -298,10 +320,30 @@ class ArenaNumbers(ReportEvaluator[Persona, ScreeningRun, Expected]):
             ScalarResult(title="p50 per turn", value=round(statistics.median(seconds), 2), unit="s"),
             ScalarResult(title="p95 per turn", value=round(statistics.quantiles(seconds, n=20)[-1], 2), unit="s"),
             ScalarResult(title="cache share", value=round(sum(t.cache_read_tokens for t in turns) / input_tokens, 3)),
+            ScalarResult(title="requests per turn", value=round(statistics.fmean(requests), 2)),
+            ScalarResult(title="most requests in a turn", value=max(requests)),
             TableResult(
                 title="responses by model",
                 columns=["model", "responses"],
                 rows=[[model, count] for model, count in models.most_common()],
+            ),
+        ]
+        if request_percentiles:
+            analyses += [
+                ScalarResult(title=f"request p{p}", value=round(request_percentiles[p - 1], 2), unit="s")
+                for p in (50, 95, 99)
+            ]
+        # What the row cost to run: the agent's turns and the simulator. The summary and the judge are a few cents.
+        # The agent's tokens too, to reprice a row when genai-prices lags the providers' price lists.
+        analyses += [
+            ScalarResult(title="agent input tokens", value=input_tokens),
+            ScalarResult(title="agent cache read tokens", value=sum(turn.cache_read_tokens for turn in turns)),
+            ScalarResult(title="agent output tokens", value=sum(turn.output_tokens for turn in turns)),
+            ScalarResult(title="agent spend", value=round(sum(cost or 0 for cost in costs), 4), unit="USD"),
+            ScalarResult(
+                title="simulator spend",
+                value=round(sum(case.metrics.get("simulator_cost_usd", 0) for case in ctx.report.cases), 4),
+                unit="USD",
             ),
         ]
         if completed and None not in costs:

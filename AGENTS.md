@@ -43,10 +43,10 @@ Write tests where they pay off:
 ## LLM, prompts and evals
 
 - Prompts live in the repo (`backend/src/screening/prompts/`) and stay client-agnostic: client knowledge (FAQ, regional glossary, persona) lives in the client config and is rendered into the instructions.
-- The prompt version is a hash of the rendered instructions (client data included) and the model settings, recorded on every turn and eval run. A changed FAQ is a changed prompt.
+- The prompt version is a hash of everything the agents read apart from the conversation: the rendered instructions, the model settings, the whole client config, and the code that writes the tools and the context block (`agent.py`, `domain.py`). It's recorded on every turn and eval run. A changed FAQ, tool description or context line is a changed prompt.
 - Prompts, tool names and descriptions are in English. The instructions carry the language rules and the client's regional glossary; each turn's state block gives the country of work.
 - Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults. They live in code next to the prompt, never in YAML or env: they change with the prompt, are hashed into the same version and need the same eval run.
-- **Candidate data is processed in the EU** (Vertex AI `eu` multi-region). The one exception is the last fallback model, used only when the primary fails (see the README). Eval-only components (simulator, judge) see synthetic data only and may use other endpoints.
+- **Real candidate data is processed in the EU** (Vertex AI `eu` multi-region); the one exception is a fallback model, used only when the primary fails. **The demo calls the providers' APIs directly** (GPT-5.6 terra, then Gemini 3.8 Flash through the Gemini API; see the README) because its data is synthetic and Vertex `eu` stalled under shared quota. Eval-only components (simulator, judge) see synthetic data only and may use other endpoints.
 - Spanish quality is checked by evals (regional terms, gender-neutral wording, fluency), because reviewers may not speak Spanish.
 
 **Changing the prompt**
@@ -74,4 +74,5 @@ Write tests where they pay off:
 ## Git
 
 - Small, meaningful commits in conventional style (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- Every commit passes the checks. In `backend/`: `uv run ruff check .`, `uv run ruff format --check .`, `uv run --group evals ty check` (the evals are type-checked too) and `uv run pytest` (the API tests need `docker compose up -d --wait db`). In `frontend/`: `npm run build` (it type-checks) and `npm run lint`. The pre-commit hook runs all of them except pytest and the build (`.pre-commit-config.yaml`), plus a check for leftover debugger calls (`ipdb`, `breakpoint()`, `debugger`). Never skip them with `--no-verify`.
 - Never commit secrets, `.env*` files, `deploy.env` or anything in `.notes/`. Variable names are documented in `backend/example.env`, kept in sync with the code.

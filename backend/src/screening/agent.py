@@ -21,7 +21,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from screening import domain
 from screening.config import ClientConfig, Country, Language, Settings
@@ -41,6 +41,10 @@ PROMPT = (PROMPTS / "screening_agent.md").read_text(encoding="utf-8")
 MODEL_SETTINGS = ModelSettings(temperature=0.4, thinking=False)
 SUMMARY_PROMPT = (PROMPTS / "summary_agent.md").read_text(encoding="utf-8")
 SUMMARY_SETTINGS = ModelSettings(temperature=0.2, thinking=False)
+# The code that writes what the models read besides the prompt: tool names, descriptions, argument schemas and results,
+# and the context block. Hashed whole into the prompt version: an edit that changes none of it bumps the version too,
+# but no change to what the models read can slip past it.
+CODE = Path(__file__).read_text(encoding="utf-8") + Path(domain.__file__).read_text(encoding="utf-8")
 LANGUAGE_NAMES = {Language.ES: "Spanish", Language.EN: "English"}
 
 
@@ -69,10 +73,12 @@ def render_summary_instructions(config: ClientConfig) -> str:
 
 
 def prompt_version(config: ClientConfig, model_settings: ModelSettings = MODEL_SETTINGS) -> str:
-    """Recorded on every turn and eval run: a changed prompt, client data or model setting of either agent is a new
-    version, because the evals measure both together."""
+    """Recorded on every turn and eval run. Everything both agents read apart from the conversation, and their model
+    settings: a change to any of it is a new version, because the evals measure them together."""
     content = render_instructions(config) + json.dumps(model_settings, sort_keys=True)
     content += render_summary_instructions(config) + json.dumps(SUMMARY_SETTINGS, sort_keys=True)
+    # The whole client config: the first message and quick-reply labels are in the history, the areas in tool results.
+    content += config.model_dump_json() + CODE
     return hashlib.sha256(content.encode()).hexdigest()[:8]
 
 
@@ -223,7 +229,13 @@ async def run_turn(
     model: Model,
     now: datetime,
     conversation_id: str,
+    model_settings: ModelSettings | None = None,
+    turn_timeout: float | None = None,
+    usage_limits: UsageLimits | None = None,
 ) -> TurnResult:
+    """One turn. The operational bounds (`model_settings`, `turn_timeout`, `usage_limits`) go to `agent.run` as they
+    are: its settings merge over MODEL_SETTINGS, so they stay out of the prompt version, and its own timeout ends the
+    run with RunTimedOut rather than a bare cancellation."""
     state = state.model_copy(deep=True)
     status_before = state.status
     # A candidate who writes is in the screening, even after going silent.
@@ -243,7 +255,14 @@ async def run_turn(
         status_before=status_before,
     ) as span:
         result = await screening_agent.run(
-            prompt, message_history=history, deps=deps, model=model, conversation_id=conversation_id
+            prompt,
+            message_history=history,
+            deps=deps,
+            model=model,
+            conversation_id=conversation_id,
+            model_settings=model_settings,
+            timeout=turn_timeout,
+            usage_limits=usage_limits,
         )
         span.set_attributes({"status_after": deps.state.status, "outcome": deps.state.outcome or "none"})
 
@@ -283,6 +302,7 @@ async def write_summary(
     model: Model,
     now: datetime,
     conversation_id: str,
+    model_settings: ModelSettings | None = None,
 ) -> RecruiterSummary:
     """Runs once when the screening ends. The key data come from code; the summary adds what they don't hold."""
     data = domain.key_data(state, config)
@@ -304,5 +324,5 @@ async def write_summary(
     with logfire.span(
         "screening summary {conversation_id}", conversation_id=conversation_id, prompt_version=prompt_version(config)
     ):
-        result = await summary_agent.run(prompt, deps=config, model=model)
+        result = await summary_agent.run(prompt, deps=config, model=model, model_settings=model_settings)
     return result.output

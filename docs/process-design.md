@@ -107,7 +107,7 @@ Each outcome has a reason and a recruiter summary, and goes back to the ATS. Rec
 ## 8. Open questions for the client
 
 1. **Applications:** which ATS and job boards, and can they push applications to us? *Assumed: yes.*
-2. **Eligibility:** do you accept licenses from other countries? Are commuters from outside an area OK? *Today: a license from another country → a recruiter checks it (in Spain an EU license is valid as it is, and most others for six months after becoming resident); outside → not qualified.*
+2. **Eligibility:** do you accept licenses from other countries? Are commuters from outside an area OK? *Today: a license from another country → a recruiter checks it; outside → not qualified.*
 3. **Next step:** call or visit; who publishes slots; review turnaround? *Today: 10-min call, slots per location, 1 working day.*
 4. **Legal sign-off:** automated knockouts with human review on request, notices, retention of transcripts and audio, and where data is processed (ES/MX). *Today: contestable knockouts; audio deleted after transcription; processed in the EU (a Mexico region is possible if required). One exception keeps the chat answering: if the EU model fails, a backup model outside the EU replies to that message. EU-only options: a second EU model as the backup, or Claude in the EU once quota is approved.*
 5. **Baseline:** current time-to-hire and hire rate of phone-screened candidates? *Today: unknown; needed to measure impact.*

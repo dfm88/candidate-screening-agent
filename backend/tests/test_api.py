@@ -8,7 +8,7 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from unittest import mock
 
@@ -116,7 +116,7 @@ async def eventually(check: Callable[[], Awaitable[bool]]) -> None:
 
 
 @asynccontextmanager
-async def running_app(settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
+async def running_app(settings: Settings) -> AsyncGenerator[httpx.AsyncClient]:
     server = uvicorn.Server(
         uvicorn.Config(create_app(settings), port=0, log_level="warning", timeout_graceful_shutdown=1)
     )
@@ -184,6 +184,7 @@ async def test_apply_chat_and_outcome_through_the_api(database_url: str) -> None
             async with asyncio.timeout(10), client.stream("GET", f"/api/chat/{token}/events") as stream:
                 events = sse(stream)
                 event, first_id, first = await anext(events)
+                assert first_id is not None
                 assert (event, first["author"], first["quick_replies"]) == (
                     "message",
                     "assistant",
@@ -209,7 +210,7 @@ async def test_apply_chat_and_outcome_through_the_api(database_url: str) -> None
                 client.stream("GET", f"/api/chat/{token}/events", headers={"Last-Event-ID": first_id}) as stream,
             ):
                 _, replayed_id, replayed = await anext(sse(stream))
-                assert int(replayed_id) > int(first_id) and replayed["client_id"] == "m1"
+                assert replayed_id is not None and int(replayed_id) > int(first_id) and replayed["client_id"] == "m1"
 
             engine = create_async_engine(database_url)
             sessionmaker = make_sessionmaker(engine)

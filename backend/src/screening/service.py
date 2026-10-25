@@ -6,10 +6,13 @@ import secrets
 import time
 import uuid
 from datetime import UTC, datetime
+from functools import partial
 
 import logfire
-from pydantic_ai import ModelMessagesTypeAdapter, ModelResponse, TextPart
+from pydantic_ai import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, TextPart
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import UsageLimits
 from pydantic_core import to_jsonable_python
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -29,13 +32,6 @@ def application_of(candidate: Candidate) -> Application:
     return Application(
         full_name=candidate.full_name, vacancy_location_id=candidate.vacancy_location_id, language=candidate.language
     )
-
-
-def report_crash(worker: asyncio.Task[None]) -> None:
-    # A worker is an edge: a crash outside the turn (the database, say) is recorded, and the messages stay pending
-    # for the next message or a restart.
-    if not worker.cancelled() and (error := worker.exception()):
-        logfire.error("{worker} crashed", worker=worker.get_name(), _exc_info=error)
 
 
 class ScreeningService:
@@ -96,7 +92,7 @@ class ScreeningService:
                 last_outbound_at=datetime.now(UTC),
             )
             # Our first message is part of the conversation the agent sees, like any message we send.
-            history = [ModelResponse(parts=[TextPart("\n\n".join(bubbles))])]
+            history: list[ModelMessage] = [ModelResponse(parts=[TextPart("\n\n".join(bubbles))])]
             try:
                 session.add(candidate)
                 await session.flush()
@@ -174,8 +170,17 @@ class ScreeningService:
         worker = self._workers.get(candidate_id)
         if worker is None or worker.done():
             worker = asyncio.create_task(self._work(candidate_id), name=f"worker-{candidate_id}")
-            worker.add_done_callback(report_crash)
+            worker.add_done_callback(partial(self._worker_done, candidate_id))
             self._workers[candidate_id] = worker
+
+    def _worker_done(self, candidate_id: uuid.UUID, worker: asyncio.Task[None]) -> None:
+        # The callback runs a moment after the task ends, so a new message may already have started the next worker.
+        if self._workers.get(candidate_id) is worker:
+            del self._workers[candidate_id]
+        # A worker is an edge: a crash outside the turn (the database, say) is recorded, and the messages stay pending
+        # for the next message or a restart.
+        if not worker.cancelled() and (error := worker.exception()):
+            logfire.error("{worker} crashed", worker=worker.get_name(), _exc_info=error)
 
     async def resume(self) -> None:
         """At startup: answer what was still pending when the last process stopped (or a turn failed)."""
@@ -185,10 +190,12 @@ class ScreeningService:
                 self.ensure_worker(candidate_id)
 
     async def stop(self) -> None:
-        # Cancelled turns leave their messages pending; resume() picks them up at the next start.
-        for worker in self._workers.values():
+        # Cancelled turns leave their messages pending; resume() picks them up at the next start. A copy, because
+        # each worker removes itself once it's done.
+        workers = list(self._workers.values())
+        for worker in workers:
             worker.cancel()
-        await asyncio.gather(*self._workers.values(), return_exceptions=True)
+        await asyncio.gather(*workers, return_exceptions=True)
 
     async def _work(self, candidate_id: uuid.UUID) -> None:
         """Let a burst of messages settle, answer everything pending in one turn, and repeat until nothing is."""
@@ -237,10 +244,14 @@ class ScreeningService:
                     model=self.model,
                     now=now,
                     conversation_id=str(candidate_id),
+                    model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
+                    turn_timeout=self.settings.turn_timeout,
+                    usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
                 )
             except Exception as error:
-                # Every fallback model failed too. The messages stay pending: the candidate's next message or a
-                # restart retries them.
+                # Every fallback model failed too, the turn ran out of time (RunTimedOut) or of requests
+                # (UsageLimitExceeded). The messages stay pending: the candidate's next message or a restart retries
+                # them.
                 logfire.exception("turn failed for {candidate_id}", candidate_id=candidate_id)
                 notice = await self._tell_failure(candidate, state, pending, error)
                 await self.channel.publish(candidate_id, [*notice, Typing(active=False)])
@@ -337,7 +348,14 @@ class ScreeningService:
             )
         try:
             summary = await write_summary(
-                state, application, self.config, transcript, self.model, now, str(candidate_id)
+                state,
+                application,
+                self.config,
+                transcript,
+                self.model,
+                now,
+                str(candidate_id),
+                model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
             )
         except Exception:
             logfire.exception("summary failed for {candidate_id}", candidate_id=candidate_id)

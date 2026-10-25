@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import logfire
@@ -23,16 +23,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logfire.instrument_pydantic_ai(include_content=settings.llm_content_logging)
     engine = db.make_engine(settings.database_url)
     logfire.instrument_sqlalchemy(engine=engine)
+    web_chat = WebChatChannel()
     service = ScreeningService(
         sessionmaker=db.make_sessionmaker(engine),
         config=load_client_config(DEFAULT_CLIENT_CONFIG),
         settings=settings,
         model=build_model(settings),
-        channel=WebChatChannel(),
+        channel=web_chat,
     )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await service.resume()
         yield
         await service.stop()
@@ -42,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.service = service
+    app.state.web_chat = web_chat
     app.include_router(api.router)
     logfire.instrument_fastapi(app, excluded_urls="/api/health")
 

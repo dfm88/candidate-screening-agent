@@ -100,13 +100,23 @@ fi
 if gc secrets describe apply-access-code >/dev/null 2>&1; then
   secrets="${secrets},APPLY_ACCESS_CODE=apply-access-code:latest"
 fi
-# The last fallback model (OpenAI) answers only when Vertex AI fails; without the key the app has no fallback.
+# The screening model (OpenAI) can't run without its key.
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   log "OPENAI_API_KEY secret"
   upsert_secret openai-api-key "$OPENAI_API_KEY"
 fi
-if gc secrets describe openai-api-key >/dev/null 2>&1; then
-  secrets="${secrets},OPENAI_API_KEY=openai-api-key:latest"
+if ! gc secrets describe openai-api-key >/dev/null 2>&1; then
+  echo "Set OPENAI_API_KEY in deploy.env: the screening model needs it." >&2
+  exit 1
+fi
+secrets="${secrets},OPENAI_API_KEY=openai-api-key:latest"
+# The fallback model (the Gemini API) answers only when OpenAI fails; without its key the app has no fallback.
+if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+  log "GOOGLE_API_KEY secret"
+  upsert_secret google-api-key "$GOOGLE_API_KEY"
+fi
+if gc secrets describe google-api-key >/dev/null 2>&1; then
+  secrets="${secrets},GOOGLE_API_KEY=google-api-key:latest"
 else
   env_vars="${env_vars},SCREENING_FALLBACK_MODELS=[]"
 fi

@@ -3,7 +3,7 @@
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Protocol
 from uuid import UUID
@@ -30,7 +30,7 @@ class WebChatChannel:
                 queue.put_nowait(event)
 
     @contextmanager
-    def subscribe(self, candidate_id: UUID) -> Iterator[asyncio.Queue[ChatEvent]]:
+    def subscribe(self, candidate_id: UUID) -> Generator[asyncio.Queue[ChatEvent]]:
         queue: asyncio.Queue[ChatEvent] = asyncio.Queue()
         self._streams[candidate_id].add(queue)
         try:
