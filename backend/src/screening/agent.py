@@ -30,9 +30,11 @@ from screening.domain import (
     EndReason,
     FieldName,
     NewAnswers,
+    Outcome,
     ScreeningState,
     Status,
     describe_saved,
+    still_to_ask,
     transition,
 )
 
@@ -54,6 +56,8 @@ class Deps:
     application: Application
     config: ClientConfig
     now: datetime
+    # The hiring team's decision, final. Read from its own column before each turn; the agent never changes it.
+    decision: Outcome | None = None
 
 
 screening_agent = Agent(deps_type=Deps, output_type=str, model_settings=MODEL_SETTINGS, name="screening")
@@ -95,7 +99,9 @@ def save_answers(ctx: RunContext[Deps], answers: NewAnswers) -> domain.SaveResul
         answers: Only what the candidate said explicitly.
     """
     deps = ctx.deps
-    deps.state, result = domain.save_answers(deps.state, answers, deps.application, deps.config, deps.now)
+    deps.state, result = domain.save_answers(
+        deps.state, answers, deps.application, deps.config, deps.now, deps.decision
+    )
     return result
 
 
@@ -111,7 +117,9 @@ def mark_unclear(ctx: RunContext[Deps], field: FieldName, note: str) -> str:
     if state.is_saved(field):
         return f"{field} is already saved."
     state.unclear[field] = note
-    return f"Recorded {field} as unclear. Still to ask: {', '.join(state.still_to_ask) or 'nothing'}."
+    return (
+        f"Recorded {field} as unclear. Still to ask: {', '.join(still_to_ask(state, ctx.deps.decision)) or 'nothing'}."
+    )
 
 
 @screening_agent.tool(docstring_format="google", require_parameter_descriptions=True)
@@ -122,6 +130,9 @@ def request_human(ctx: RunContext[Deps], reason: str) -> str:
         reason: What the candidate wants, in a few words.
     """
     ctx.deps.state = domain.request_human(ctx.deps.state, reason)
+    if ctx.deps.decision:
+        decision = ctx.deps.decision
+        return f"Recorded for the hiring team, who will contact the candidate. Their decision ({decision}) is final."
     return "Recorded: a person from the team will review the screening and contact the candidate."
 
 
@@ -153,7 +164,7 @@ def end_conversation(ctx: RunContext[Deps], reason: EndReason) -> str:
 def finish_screening(ctx: RunContext[Deps]) -> domain.FinishResult:
     """Compute the outcome: after the candidate confirms the recap, right after a knockout "no", or when they asked
     for a person and don't want to continue. Code decides the outcome; you phrase the close."""
-    ctx.deps.state, result = domain.finish_screening(ctx.deps.state)
+    ctx.deps.state, result = domain.finish_screening(ctx.deps.state, ctx.deps.decision)
     return result
 
 
@@ -176,10 +187,18 @@ def build_model(settings: Settings) -> Model:
     return FallbackModel(primary, *fallbacks) if fallbacks else primary
 
 
-def render_context(state: ScreeningState, application: Application, config: ClientConfig, now: datetime) -> str:
-    """The <system_ctx> block: values only (the clock, the country, the state). The rules are in the prompt."""
+def render_context(
+    state: ScreeningState,
+    application: Application,
+    config: ClientConfig,
+    now: datetime,
+    decision: Outcome | None = None,
+) -> str:
+    """The <system_ctx> block: values only (the clock, the country, the state). The rules are in the prompt. Once the
+    hiring team has decided, their decision is the outcome; the rules' outcome is for their page only."""
     location = config.locations_by_id[application.vacancy_location_id]
     saved = describe_saved(state, config)
+    outcome = f"{decision} (the hiring team's decision, final)" if decision else state.outcome or "none"
     lines = [
         f"now: {now.astimezone(location.tz):%Y-%m-%d %H:%M (%A)} {location.timezone}",
         f"country_of_work: {location.country}",
@@ -187,10 +206,10 @@ def render_context(state: ScreeningState, application: Application, config: Clie
         f"vacancy: {location.name}",
         f"name_on_application: {application.full_name}",
         f"status: {state.status}",
-        f"outcome: {state.outcome or 'none'}",
+        f"outcome: {outcome}",
         "saved: " + ("; ".join(f"{field}={value}" for field, value in saved.items()) or "nothing yet"),
         "unclear: " + ("; ".join(f"{field} ({note})" for field, note in state.unclear.items()) or "none"),
-        "still_to_ask: " + (", ".join(state.still_to_ask) or "nothing"),
+        "still_to_ask: " + (", ".join(still_to_ask(state, decision)) or "nothing"),
         "review_flags: " + (", ".join(flag.reason for flag in state.flags) or "none"),
     ]
     # Names and places come from candidates: escaped, so no value can close the block or open a new one.
@@ -232,6 +251,7 @@ async def run_turn(
     model_settings: ModelSettings | None = None,
     turn_timeout: float | None = None,
     usage_limits: UsageLimits | None = None,
+    decision: Outcome | None = None,
 ) -> TurnResult:
     """One turn. The operational bounds (`model_settings`, `turn_timeout`, `usage_limits`) go to `agent.run` as they
     are: its settings merge over MODEL_SETTINGS, so they stay out of the prompt version, and its own timeout ends the
@@ -245,14 +265,17 @@ async def run_turn(
     # Candidate text is escaped so it can't pose as a <system_ctx> block.
     escaped = [html.escape(message, quote=False) for message in candidate_messages]
     new_messages = "".join(f"<message>{message}</message>\n" for message in escaped)
-    prompt = f"{render_context(state, application, config, now)}\n<new_messages>\n{new_messages}</new_messages>"
+    prompt = (
+        f"{render_context(state, application, config, now, decision)}\n<new_messages>\n{new_messages}</new_messages>"
+    )
 
-    deps = Deps(state=state, application=application, config=config, now=now)
+    deps = Deps(state=state, application=application, config=config, now=now, decision=decision)
     with logfire.span(
         "screening turn {conversation_id}",
         conversation_id=conversation_id,
         prompt_version=prompt_version(config),
         status_before=status_before,
+        decision=decision or "none",
     ) as span:
         result = await screening_agent.run(
             prompt,

@@ -53,11 +53,36 @@ Each conversation has one worker in the API process. It waits for a burst of mes
 
 **The candidate pages** (`frontend/`: React, Vite, Tailwind, React Router, TanStack Query). `/apply` is the public apply form; with `APPLY_ACCESS_CODE` set, the link to share is `/apply?code=…`, which fills the code in. Its confirmation opens the chat, or shows a QR code to continue on a phone. `/chat/TOKEN` is the mobile-first chat: it renders the event stream (and replays what it missed after a reconnect), shows the first message's suggested replies, a typing indicator, and closes the input once the candidate withdraws. `frontend/src/api.ts` mirrors `contract.py`.
 
+**The recruiter tool** is at `/recruiter` (see [Recruiter tool](#recruiter-tool)); `example.env` has a local password for it.
+
 **Models and where candidate data goes.** The demo's live turns run on OpenAI's GPT-5.6 terra through OpenAI's API. If it fails (an outage, a run of rate limits, or a request past `REQUEST_TIMEOUT`), PydanticAI's `FallbackModel` hands the message to Gemini 3.8 Flash through the Gemini API: another provider, so one outage can't take out both. Neither keeps processing in the EU, which is fine for the demo's synthetic data. For real candidates, the EU path is Gemini on Vertex AI in the `eu` multi-region (`google-cloud:` models); on 2026-10-25 it stalled under shared quota (see "Why GPT-5.6 terra"), so it needs reserved capacity before it can carry live chats. Whether data may leave the EU is a client decision (open question 4 in the process design). Both models are set in `.env` (`SCREENING_MODEL`, `SCREENING_FALLBACK_MODELS`), with `OPENAI_API_KEY` and `GOOGLE_API_KEY`.
 
 With one key, set `SCREENING_FALLBACK_MODELS=[]`: `OPENAI_API_KEY` alone runs the default model. Use these paths with test data only.
 
 To run the production image locally: `docker compose --profile app up --build` (http://localhost:8080). It picks up `backend/.env` if present.
+
+## Recruiter tool
+
+`/recruiter` sits behind a login page that asks for a name and a shared password (`RECRUITER_PASSWORD`). The login sets a signed, HttpOnly session cookie (Starlette's `SessionMiddleware`, keyed with `SESSION_SECRET`, SameSite=Lax, 14 days, so reviewers can come back over several days). Recruiter writes are POST only, which with SameSite=Lax is the CSRF protection.
+
+- **Tabs:** Ready (qualified), Review (waiting for a person), In progress, Closed (not qualified, withdrawn, abandoned), each with its count. Search by name or phone looks in every tab. A tab lists its latest 200 candidates; search reaches the rest.
+- **A candidate's page:**
+  - the key data, built by code from the saved answers, with a ✓, gap or ⚑ per field;
+  - the AI summary under it;
+  - the matching restaurant and the chat link to copy;
+  - the transcript, with the templates we sent marked.
+
+  It refreshes every 5 s, so a chat that's still running shows as it goes.
+- **Decisions:** Qualified or Not qualified, with a note for the team.
+  - The candidate is told in the chat with a template (`decision_qualified` / `decision_not_qualified` in the client config). The note stays internal.
+  - The decision is final and has its own columns (`decided_outcome`, `decided_by`, `decision_note`, `decided_at`). The worker keeps writing the rules' outcome in `outcome`, so nothing it writes can overwrite a decision, and the page shows both.
+  - The chat stays open after a decision, and the template goes into the model's history like every message we send.
+
+**Limits of the demo's login.**
+- **The name is attribution, not identity:** with one shared password, anyone can type any name. In production, each recruiter signs in through the client's SSO.
+- **Changing the password doesn't end open sessions,** because the cookie is stateless. After the review, rotate both: `RECRUITER_PASSWORD=… SESSION_SECRET=$(openssl rand -hex 32) ./deploy.sh`.
+- **No rate limiting** on the login, nor yet on the public endpoints.
+- **A decision during a running turn is rare and accepted:** the candidate may get the decision between two agent replies.
 
 ## Timeouts, retries and limits
 
@@ -146,7 +171,9 @@ cp deploy.env.example deploy.env   # set GCP_PROJECT (and CLOUDSDK_CONFIG if you
 
 `deploy.sh` is re-runnable. It refuses to run if the active gcloud project differs from `GCP_PROJECT`. It enables the required APIs and creates the service account, the Cloud SQL instance, the database and its secret only if they're missing, then deploys from source with Cloud Build.
 
-The demo deployment logs full LLM prompts and completions to Logfire (`LLM_CONTENT_LOGGING=true`, synthetic data only). For a real client it stays off unless there's a DPA and a legal basis.
+The demo deployment logs full LLM prompts and completions to Logfire (`LLM_CONTENT_LOGGING=true`), so every turn of a test chat can be read in the traces. People trying the demo might still type real details, so the apply page asks for made-up data. For a real client it stays off unless there's a DPA and a legal basis.
+
+Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD` and `LOGFIRE_TOKEN` are optional, and `SESSION_SECRET` is generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`).
 
 The service runs as exactly one always-on instance (`--min-instances 1 --max-instances 1 --no-cpu-throttling`), because the reminder loop, the SSE streams and the per-conversation locks live in that process.
 

@@ -7,17 +7,28 @@ frontend/src/api.ts mirror this file.
     POST /api/chat/{token}/messages      CandidateMessage → 202 MessageAccepted · 409 chat closed
     GET  /api/chat/{token}/events        SSE: `message` ChatMessage (id = message id, replayed after Last-Event-ID),
                                               `typing` Typing, `status` ChatStatus
+
+The recruiter tool. Every route but the login needs the session cookie the login sets (401 without it; 503 when
+RECRUITER_PASSWORD isn't set). Writes are POST only: with the cookie's SameSite=Lax, that's the CSRF protection.
+
+    POST /api/recruiter/login                       Login → Recruiter · 401 wrong password
+    POST /api/recruiter/logout                      → 204
+    GET  /api/recruiter/me                          → Recruiter
+    GET  /api/recruiter/candidates?tab&q            → CandidateList (both optional; q matches the name or phone)
+    GET  /api/recruiter/candidates/{id}             → CandidateDetail · 404
+    POST /api/recruiter/candidates/{id}/decision    DecisionRequest → Decision · 409 not finished or already decided
 """
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from screening.agent import RecruiterSummary
 from screening.config import Country, Language
-from screening.domain import Status
+from screening.domain import FieldName, KeyData, Outcome, Status
 
 # --- Apply ------------------------------------------------------------------------------------------------------
 
@@ -106,3 +117,89 @@ class ChatStatus(BaseModel):
 
 
 ChatEvent = ChatMessage | Typing | ChatStatus
+
+
+# --- Recruiter tool ----------------------------------------------------------------------------------------------
+
+
+class Login(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+    password: str
+
+
+class Recruiter(BaseModel):
+    name: str
+
+
+class Tab(StrEnum):
+    READY = "ready"
+    REVIEW = "review"
+    IN_PROGRESS = "in_progress"
+    CLOSED = "closed"
+
+
+class CandidateRow(BaseModel):
+    id: UUID
+    full_name: str
+    vacancy: str
+    country: Country
+    status: Status
+    # The rule's outcome; the recruiter's decision, when there is one, is shown instead.
+    outcome: Outcome | None
+    decided_outcome: Outcome | None
+    reasons: list[str]
+    tab: Tab
+    created_at: datetime
+
+
+class CandidateList(BaseModel):
+    candidates: list[CandidateRow]
+    counts: dict[Tab, int]
+
+
+class FieldMark(StrEnum):
+    SAVED = "saved"
+    # An optional field left unclear: the recruiter sees it, the outcome doesn't change.
+    GAP = "gap"
+    # A required field left unclear: a review reason.
+    REVIEW = "review"
+    MISSING = "missing"
+
+
+class Decision(BaseModel):
+    outcome: Outcome
+    by: str
+    note: str | None
+    at: datetime
+
+
+class TranscriptMessage(ChatMessage):
+    # Set on the messages we send from a template (the first message, the decision, the failure notice).
+    template_key: str | None
+
+
+class CandidateDetail(BaseModel):
+    id: UUID
+    full_name: str
+    phone: str
+    vacancy: Vacancy
+    language: Language
+    whatsapp_opt_in: bool
+    status: Status
+    tab: Tab
+    created_at: datetime
+    completed_at: datetime | None
+    key_data: KeyData
+    marks: dict[FieldName, FieldMark]
+    # The restaurant whose service area the candidate lives in.
+    matched_location: Vacancy | None
+    summary: RecruiterSummary | None
+    decision: Decision | None
+    chat_url: str
+    transcript: list[TranscriptMessage]
+
+
+class DecisionRequest(BaseModel):
+    # The recruiter is the person a review waits for: the decision is qualified or not.
+    outcome: Literal[Outcome.QUALIFIED, Outcome.NOT_QUALIFIED]
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None

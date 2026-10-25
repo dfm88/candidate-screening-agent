@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     chat_debounce_seconds: float = 1.5
     # Required by the public apply form when set (the reviewer link carries it); unset means no check.
     apply_access_code: str | None = None
+    # The recruiter tool's shared password. Unset, the recruiter tool stays closed.
+    recruiter_password: str | None = None
+    # Signs the recruiter's session cookie. It comes from the environment (Secret Manager on Cloud Run) and is never
+    # generated at startup: a restart would end every session, and two instances would reject each other's cookies.
+    session_secret: str | None = None
+    # The cookie's Secure flag. Off only for local http, where httpx (the tests) and some browsers wouldn't send it.
+    session_https_only: bool = True
 
 
 class Country(StrEnum):

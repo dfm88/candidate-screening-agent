@@ -61,7 +61,7 @@ ASSERTIONS = [
     "gender_neutral",
 ]
 SCORES = ["saved_answers", "message_shape"]
-JUDGE_SCORES = [*RUBRICS, "summary"]
+JUDGE_SCORES = [*RUBRICS, "summary", "decision"]
 
 
 def is_transient(error: BaseException) -> bool:
@@ -181,6 +181,7 @@ def write_transcripts(report: EvaluationReport, path: Path) -> None:
                 f"`{', '.join(turn.tool_calls) or 'no tools'} · {', '.join(turn.models)} · {turn.seconds:.1f}s`"
             )
             parts += [quote("assistant", message) for message in turn.reply]
+            parts += [quote("assistant (template)", message) for message in turn.sent_after]
             parts.append(f"`asked: {', '.join(turn.asked_about) or '-'}`\n")
         answers = run.state.answers
         parts.append(f"Final: status={run.state.status} outcome={run.state.outcome} license={answers.license}\n")

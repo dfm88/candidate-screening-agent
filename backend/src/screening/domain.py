@@ -235,6 +235,11 @@ class ScreeningState(BaseModel):
         return [field for field in self.unclear if field not in REQUIRED]
 
 
+def still_to_ask(state: ScreeningState, decision: Outcome | None) -> list[FieldName]:
+    """What the agent should still ask. Nothing once the hiring team has decided: their decision is final."""
+    return [] if decision else state.still_to_ask
+
+
 def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldName, str]:
     """Saved answers as short readable values, for the agent's context, tool results and the key data."""
     answers = state.answers
@@ -273,12 +278,21 @@ class SaveResult(BaseModel):
     not_saved: dict[FieldName, str] = Field(description="Why each answer wasn't saved, and what to ask instead.")
     knockout: str | None = Field(description="Set when the candidate doesn't qualify: call finish_screening.")
     still_to_ask: list[FieldName]
+    decision: str | None = Field(
+        default=None, description="Set once the hiring team has decided: their outcome stands."
+    )
 
 
 def save_answers(
-    state: ScreeningState, new: NewAnswers, application: Application, config: ClientConfig, now: datetime
+    state: ScreeningState,
+    new: NewAnswers,
+    application: Application,
+    config: ClientConfig,
+    now: datetime,
+    decision: Outcome | None = None,
 ) -> tuple[ScreeningState, SaveResult]:
-    """Validate what we own (service areas, dates), save the answers and report back to the agent."""
+    """Validate what we own (service areas, dates), save the answers and report back to the agent. After the hiring
+    team's decision, answers are still saved and recorded for them, but no outcome changes what the agent tells."""
     state = state.model_copy(deep=True)
     answers = state.answers
     vacancy = config.locations_by_id[application.vacancy_location_id]
@@ -357,18 +371,22 @@ def save_answers(
     knockout_after = state.knockout
     if state.status is Status.COMPLETED and knockout_after != knockout_before:
         state.flags.append(ReviewFlag(reason=ReviewReason.KNOCKOUT_CHANGED, detail=f"was {knockout_before or 'none'}"))
-        if knockout_after is None:  # no longer disqualified: reopen and collect the rest
+        # No longer disqualified: reopen and collect the rest. Not after a decision, which nothing reopens: the change
+        # reaches the hiring team as the rules' outcome on the candidate's page.
+        if knockout_after is None and decision is None:
             state.status = transition(state.status, Status.IN_PROGRESS)
             state.outcome = None
         else:
             state.outcome = Outcome.NEEDS_HUMAN_REVIEW
 
     described = describe_saved(state, config)
+    knockout = f"{knockout_after}: the candidate doesn't qualify, call finish_screening" if knockout_after else None
     return state, SaveResult(
         saved={field: described[field] for field in touched if field in described},
         not_saved=not_saved,
-        knockout=f"{knockout_after}: the candidate doesn't qualify, call finish_screening" if knockout_after else None,
-        still_to_ask=state.still_to_ask,
+        knockout=None if decision else knockout,
+        still_to_ask=still_to_ask(state, decision),
+        decision=f"{decision}, final: announce no other outcome; the team will see this answer" if decision else None,
     )
 
 
@@ -420,8 +438,11 @@ class FinishResult(BaseModel):
     still_to_ask: list[FieldName] = Field(default=[], description="Ask these before finishing.")
 
 
-def finish_screening(state: ScreeningState) -> tuple[ScreeningState, FinishResult]:
+def finish_screening(state: ScreeningState, decision: Outcome | None = None) -> tuple[ScreeningState, FinishResult]:
     state = state.model_copy(deep=True)
+    if decision is not None:
+        # The hiring team's decision is the outcome to tell; the rules' outcome stays recorded for their page.
+        return state, FinishResult(finished=True, outcome=decision, reasons=["the hiring team's decision, final"])
     if state.status is Status.COMPLETED:
         _, reasons = compute_outcome(state)
         return state, FinishResult(finished=True, outcome=state.outcome, reasons=reasons, gaps=state.gaps)

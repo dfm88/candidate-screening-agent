@@ -213,8 +213,9 @@ labels:
     field_experience: your experience
     field_start_date: your start date
 
-# Fixed messages, only where the channel requires them: the first message and the reminders fall outside
-# WhatsApp's 24-hour window, and the failure notice is sent when the model itself is failing.
+# Fixed messages, only where the channel requires them: the first message, the reminders and the recruiter's decision
+# (which can come days later) fall outside WhatsApp's 24-hour window, and the failure notice is sent when the model
+# itself is failing.
 # Each template is a list of bubbles; {placeholders} are filled by code. Gender-neutral in every locale.
 templates:
   first_message:
@@ -238,6 +239,21 @@ templates:
       - "Hola, {first_name}. Nos quedamos en {stage}. ¿Seguimos?"
     en:
       - "Hi {first_name}. We stopped at {stage}. Shall we continue?"
+  # The recruiter's decision, keyed decision_{outcome}. The recruiter's note stays internal.
+  decision_qualified:
+    es-ES:
+      - "Hola, {first_name}. El equipo de selección ha revisado tu solicitud para repartir en {city} y tu perfil encaja.\nTe contactaremos pronto para el siguiente paso."
+    es-MX:
+      - "Hola, {first_name}. El equipo de reclutamiento revisó tu solicitud para repartir en {city} y tu perfil encaja.\nTe contactaremos pronto para el siguiente paso."
+    en:
+      - "Hi {first_name}. The hiring team has reviewed your application to deliver in {city}, and your profile is a fit.\nWe'll contact you soon about the next step."
+  decision_not_qualified:
+    es-ES:
+      - "Hola, {first_name}. El equipo de selección ha revisado tu solicitud para repartir en {city} y, por ahora, no podemos seguir adelante.\nGracias por tu tiempo. Si tienes alguna pregunta, escríbenos aquí."
+    es-MX:
+      - "Hola, {first_name}. El equipo de reclutamiento revisó tu solicitud para repartir en {city} y, por ahora, no podemos seguir adelante.\nGracias por tu tiempo. Si tienes alguna pregunta, escríbenos aquí."
+    en:
+      - "Hi {first_name}. The hiring team has reviewed your application to deliver in {city}, and we can't move forward for now.\nThanks for your time. If you have any questions, write to us here."
   failure:
     es-ES:
       - "Dame un momento, por favor."

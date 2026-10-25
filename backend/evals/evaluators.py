@@ -241,6 +241,14 @@ RUBRICS = {
     "and no words typical of the other country. Score 1.0 when flawless, lower for each reply in the wrong language "
     "or each error.",
 }
+# Judged only in conversations where the hiring team's decision reaches the candidate.
+DECISION_RUBRIC = (
+    "The line marked 'Hiring team (decision)' is the recruiters' decision on the application, and it is final. Every "
+    "assistant reply after it must agree with it. A reply contradicts it when it says or implies that the application "
+    "is still to be reviewed or decided, or when it states or implies a different outcome, for example that a "
+    "requirement isn't met after a new answer. Taking a new answer and saying the team will see it is fine. Score 1.0 "
+    "when every later reply agrees with the decision, 0.0 when any contradicts it."
+)
 SUMMARY_RUBRIC = (
     "The output is the part of a recruiter's summary that adds to the key data in the input, which the recruiter "
     "already sees: caveats to check before deciding, and notes worth knowing. Empty lists are right when the "
@@ -256,14 +264,12 @@ SUMMARY_RUBRIC = (
 class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
     """LLM judge for what code can't check. It sees the transcript, the country and the name, not the state dumps that
     LLMJudge would serialize from the whole output, so it grades the conversation the candidate saw. The summary is
-    graded against the transcript. A scripted case is a fragment, not a conversation: it isn't judged."""
+    graded against the transcript. A scripted case is a fragment, not a conversation: only its decision is judged."""
 
     model: str
     model_settings: ModelSettings | None = None
 
     async def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
-        if ctx.inputs.script:
-            return {}
         country = CONFIG.locations_by_id[ctx.inputs.vacancy].country
         # The name comes from the application, so the assistant may use it before the candidate gives it.
         context = (
@@ -271,11 +277,14 @@ class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
             f"Name on the application: {ctx.inputs.name_on_application}."
         )
         transcript = ctx.output.transcript()
+        rubrics = {} if ctx.inputs.script else dict(RUBRICS)
+        if ctx.inputs.decision:
+            rubrics["decision"] = DECISION_RUBRIC
         gradings = {
             name: judge_input_output(context, transcript, rubric, self.model, self.model_settings)
-            for name, rubric in RUBRICS.items()
+            for name, rubric in rubrics.items()
         }
-        if ctx.output.summary:
+        if ctx.output.summary and not ctx.inputs.script:
             # The summary adds to the key data (what the recruiter sees first), so the judge reads both. Today's date
             # too, as the summary agent does: a start date of today next to "right away" is no discrepancy.
             key_data = domain.key_data(ctx.output.state, CONFIG).model_dump_json(indent=2)

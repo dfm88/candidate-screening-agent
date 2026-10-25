@@ -100,6 +100,24 @@ fi
 if gc secrets describe apply-access-code >/dev/null 2>&1; then
   secrets="${secrets},APPLY_ACCESS_CODE=apply-access-code:latest"
 fi
+# The recruiter tool's shared password; without it the recruiter tool stays closed.
+if [[ -n "${RECRUITER_PASSWORD:-}" ]]; then
+  log "RECRUITER_PASSWORD secret"
+  upsert_secret recruiter-password "$RECRUITER_PASSWORD"
+fi
+if gc secrets describe recruiter-password >/dev/null 2>&1; then
+  secrets="${secrets},RECRUITER_PASSWORD=recruiter-password:latest"
+fi
+# Signs the recruiter's session cookie: SESSION_SECRET when given (to rotate it), otherwise generated once and kept, so
+# sessions survive restarts and redeploys.
+if [[ -n "${SESSION_SECRET:-}" ]]; then
+  log "SESSION_SECRET secret"
+  upsert_secret session-secret "$SESSION_SECRET"
+elif ! gc secrets describe session-secret >/dev/null 2>&1; then
+  log "SESSION_SECRET secret (generated)"
+  upsert_secret session-secret "$(openssl rand -hex 32)"
+fi
+secrets="${secrets},SESSION_SECRET=session-secret:latest"
 # The screening model (OpenAI) can't run without its key.
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   log "OPENAI_API_KEY secret"

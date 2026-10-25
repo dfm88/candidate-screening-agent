@@ -1,6 +1,8 @@
 # Local development artifacts
 .memsearch
 .notes
+# Claude Code's per-machine dev-server config (launch.json).
+.claude/
 .vscode
 .idea
 .DS_Store

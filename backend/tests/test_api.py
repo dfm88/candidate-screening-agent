@@ -1,4 +1,5 @@
-"""Through the HTTP API, with the LLM stubbed: apply → chat (SSE) → outcome, and the failure path.
+"""Through the HTTP API, with the LLM stubbed: apply → chat (SSE) → outcome, the failure path, and a recruiter
+deciding a review case.
 
 Needs the compose Postgres (`docker compose up -d --wait db`). The app runs under uvicorn, because an event stream
 never ends and httpx's in-process transport only returns a response once it has.
@@ -17,7 +18,7 @@ import pytest
 import uvicorn
 from alembic import command
 from alembic.config import Config
-from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -31,6 +32,7 @@ pytestmark = pytest.mark.anyio
 
 TEST_DATABASE = "screening_test"
 ACCESS_CODE = "demo-code"
+RECRUITER_PASSWORD = "recruiter-pass"
 EVERYTHING = {
     "full_name": "Lucía Martín García",
     "license": "yes",
@@ -74,6 +76,10 @@ def settings_for(database_url: str) -> Settings:
         screening_fallback_models=[],
         chat_debounce_seconds=0.05,
         apply_access_code=ACCESS_CODE,
+        recruiter_password=RECRUITER_PASSWORD,
+        session_secret="test-session-secret",
+        # httpx sends a Secure cookie over https only.
+        session_https_only=False,
     )
 
 
@@ -95,6 +101,22 @@ def summary_model() -> FunctionModel:
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         output = {"caveats": [], "notes": ["Puede empezar ya."]}
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
+
+    return FunctionModel(respond)
+
+
+def reviewing_model(seen: list[list[ModelMessage]]) -> FunctionModel:
+    """Asked for a person, it records the request and closes for review; after that it just answers."""
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        latest = messages[-1].parts
+        returned = [part.tool_name for part in latest if isinstance(part, ToolReturnPart)]
+        if any(isinstance(part, UserPromptPart) and "persona" in str(part.content) for part in latest):
+            return ModelResponse(parts=[ToolCallPart("request_human", {"reason": "quiere hablar con alguien"})])
+        if returned == ["request_human"]:
+            return ModelResponse(parts=[ToolCallPart("finish_screening", {})])
+        return ModelResponse(parts=[TextPart("Una persona del equipo revisará tu solicitud.")])
 
     return FunctionModel(respond)
 
@@ -258,3 +280,87 @@ async def test_a_failing_model_sends_the_notice_once_and_keeps_the_messages_pend
             await engine.dispose()
             assert [row.text for row in rows if row.template_key == "failure"] == ["Dame un momento, por favor."]
             assert [row.client_id for row in rows if row.author == "candidate" and row.turn_id is None] == ["m1", "m2"]
+
+
+async def test_a_recruiter_resolves_a_review_case(database_url: str) -> None:
+    seen: list[list[ModelMessage]] = []
+    with screening_agent.override(model=reviewing_model(seen)), summary_agent.override(model=summary_model()):
+        async with running_app(settings_for(database_url)) as client:
+            assert (await client.get("/api/recruiter/candidates")).status_code == 401
+            wrong = {"name": "Ana", "password": "nope"}
+            assert (await client.post("/api/recruiter/login", json=wrong)).status_code == 401
+            login = {"name": "Ana", "password": RECRUITER_PASSWORD}
+            assert (await client.post("/api/recruiter/login", json=login)).json() == {"name": "Ana"}
+            assert (await client.get("/api/recruiter/me")).json() == {"name": "Ana"}
+
+            created = (await client.post("/api/applications", json=application())).json()
+            detail_url = f"/api/recruiter/candidates/{created['candidate_id']}"
+            detail = (await client.get(detail_url)).json()
+            assert detail["tab"] == "in_progress"
+            assert detail["transcript"][0]["template_key"] == "first_message"
+            listed = (
+                await client.get("/api/recruiter/candidates", params={"tab": "in_progress", "q": "Martín"})
+            ).json()
+            assert created["candidate_id"] in [row["id"] for row in listed["candidates"]]
+
+            decision = {"outcome": "qualified", "note": "Llamada hecha: todo bien."}
+            # Nothing to decide on before the screening ends.
+            assert (await client.post(f"{detail_url}/decision", json=decision)).status_code == 409
+
+            token = created["chat_url"].removeprefix("/chat/")
+            ask = {"text": "quiero hablar con una persona", "client_id": "m1"}
+            await client.post(f"/api/chat/{token}/messages", json=ask)
+
+            async def in_review() -> bool:
+                return (await client.get(detail_url)).json()["tab"] == "review"
+
+            await eventually(in_review)
+            review = (await client.get("/api/recruiter/candidates", params={"tab": "review"})).json()
+            row = next(row for row in review["candidates"] if row["id"] == created["candidate_id"])
+            assert row["reasons"] == ["human_requested: quiere hablar con alguien"]
+            assert review["counts"]["review"] >= 1
+
+            decided = await client.post(f"{detail_url}/decision", json=decision)
+            assert decided.json()["by"] == "Ana"
+            # The decision is final.
+            assert (await client.post(f"{detail_url}/decision", json=decision)).status_code == 409
+            detail = (await client.get(detail_url)).json()
+            assert detail["tab"] == "ready" and detail["decision"]["note"] == "Llamada hecha: todo bien."
+            # The rule's outcome stays as it was; the decision sits next to it.
+            assert detail["key_data"]["outcome"] == "needs_human_review"
+            template = detail["transcript"][-1]
+            assert template["template_key"] == "decision_qualified" and "tu perfil encaja" in template["text"]
+
+            # Everything we send is in the model's history: the next turn sees the decision.
+            await client.post(f"/api/chat/{token}/messages", json={"text": "¿y ahora qué?", "client_id": "m2"})
+
+            def request_for(text: str) -> list[ModelMessage] | None:
+                # Found by the candidate's text: at startup the app also resumes other tests' pending messages.
+                for messages in seen:
+                    if any(
+                        isinstance(part, UserPromptPart) and text in str(part.content) for part in messages[-1].parts
+                    ):
+                        return messages
+                return None
+
+            async def next_turn_asked() -> bool:
+                return request_for("¿y ahora qué?") is not None
+
+            await eventually(next_turn_asked)
+            request = request_for("¿y ahora qué?")
+            assert request is not None
+            history = [
+                part.content
+                for message in request
+                if isinstance(message, ModelResponse)
+                for part in message.parts
+                if isinstance(part, TextPart)
+            ]
+            assert any("tu perfil encaja" in text for text in history)
+            # And its context block gives the decision as the outcome, not the rules' review.
+            prompt = request[-1].parts[-1]
+            assert isinstance(prompt, UserPromptPart)
+            assert "outcome: qualified (the hiring team's decision, final)" in str(prompt.content)
+
+            assert (await client.post("/api/recruiter/logout")).status_code == 204
+            assert (await client.get("/api/recruiter/me")).status_code == 401

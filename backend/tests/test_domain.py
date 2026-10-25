@@ -50,8 +50,14 @@ def in_progress() -> ScreeningState:
     return ScreeningState(status=Status.IN_PROGRESS, language=Language.ES)
 
 
-def save(new: NewAnswers, state: ScreeningState | None = None, app: Application = MADRID, now: datetime = NOW):
-    return save_answers(state or in_progress(), new, app, CONFIG, now)
+def save(
+    new: NewAnswers,
+    state: ScreeningState | None = None,
+    app: Application = MADRID,
+    now: datetime = NOW,
+    decision: Outcome | None = None,
+):
+    return save_answers(state or in_progress(), new, app, CONFIG, now, decision)
 
 
 # --- Lookups and value resolution ------------------------------------------------------------------------
@@ -191,6 +197,26 @@ def test_knockout_corrected_after_the_outcome_reopens_with_a_review_flag() -> No
     assert (state.status, state.outcome) == (Status.IN_PROGRESS, None)
     assert state.flags[0].reason is ReviewReason.KNOCKOUT_CHANGED
     assert FieldName.SERVICE_AREA in result.still_to_ask
+
+
+def test_after_the_hiring_teams_decision_a_corrected_knockout_reopens_nothing() -> None:
+    state, _ = finish_screening(save(NewAnswers(license=LicenseAnswer.NO))[0])
+    state, result = save(NewAnswers(license=LicenseAnswer.YES), state=state, decision=Outcome.NOT_QUALIFIED)
+    # Recorded for the recruiter's page as a review reason; the screening stays closed with nothing left to ask.
+    assert (state.status, state.outcome) == (Status.COMPLETED, Outcome.NEEDS_HUMAN_REVIEW)
+    assert state.flags[0].reason is ReviewReason.KNOCKOUT_CHANGED
+    assert result.still_to_ask == [] and result.decision and result.decision.startswith("not_qualified")
+
+
+def test_after_the_hiring_teams_decision_a_new_knockout_is_no_new_verdict() -> None:
+    state = save(NewAnswers(full_name="Lucía Martín García"))[0]
+    state.flags.append(ReviewFlag(reason=ReviewReason.HUMAN_REQUESTED, detail="prefers a call"))
+    state, _ = finish_screening(state)
+    state, result = save(NewAnswers(license=LicenseAnswer.NO), state=state, decision=Outcome.QUALIFIED)
+    assert result.knockout is None and state.outcome is Outcome.NEEDS_HUMAN_REVIEW
+    # Even if the agent asks for the outcome again, the decision is what it gets.
+    _, finished = finish_screening(state, Outcome.QUALIFIED)
+    assert (finished.outcome, finished.reasons) == (Outcome.QUALIFIED, ["the hiring team's decision, final"])
 
 
 # --- finish_screening ---------------------------------------------------------------------------------------

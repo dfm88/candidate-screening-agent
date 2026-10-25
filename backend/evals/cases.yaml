@@ -27,6 +27,34 @@ cases:
         full_name: Luis Alberto Pérez Gómez
         license: null
 
+  - name: scripted_es_reply_after_decision
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Marta Ruiz Gómez
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Marta asks for a person instead of the questions; a recruiter then decides she qualifies, and she asks when
+        they'll call ("genial! y cuándo me llamáis?"), then mentions her license expired last month. Replayed from a
+        terra run in the browser (2026-10-25): after the decision the agent still said the team would review her
+        application, because the context block only showed the rules' outcome.
+      script:
+        - ["Empezar"]
+        - ["sí, soy yo. pero prefiero hablar con una persona del equipo"]
+        - ["no gracias, prefiero esperar a que me escriban"]
+        - ["genial! y cuándo me llamáis?"]
+        - ["ah por cierto, el carnet lo tengo caducado desde el mes pasado"]
+      decision: {after_turn: 3, outcome: qualified}
+    metadata:
+      tags: [es, scripted, decision]
+      status: completed
+      outcome: needs_human_review
+      review_reasons: [human_requested, knockout_changed]
+      final_language: es
+      answers:
+        full_name: Marta Ruiz Gómez
+        license: "no"
+
   - name: es_madrid_burst_qualified
     inputs:
       vacancy: es-mad-chamberi

@@ -18,7 +18,7 @@ Today 13 recruiters phone about 1,000 applicants a week: 60% don't answer, and 8
 flowchart TD
     APP["New application (ATS / job board)"] --> T["First message (template)<br/>Start · Not interested"]
     LINK["Candidate taps 'Continue on WhatsApp'"] --> INTRO
-    T -->|silence| REM["Up to 2 reminders"] -->|still silent| AB(["Abandoned"])
+    T -->|"silence (any step)"| REM["Up to 2 reminders"] -->|still silent| AB(["Abandoned"])
     T -->|Not interested / STOP| WD(["Withdrawn"])
     T -->|Start or any reply| INTRO["Intro: virtual assistant,<br/>confirm name"]
     INTRO -->|wrong person| WD
@@ -27,7 +27,7 @@ flowchart TD
     LIC -->|Yes| ZONE{"Lives in a service area?"}
     LIC -->|Unclear after 2 tries ⚑| ZONE
     ZONE -->|No| NQ
-    ZONE -->|Yes| REST["Availability → Schedule →<br/>Experience → Start date<br/>(gaps allowed)"]
+    ZONE -->|Yes| REST["Availability → Schedule →<br/>Experience → Start date<br/>(no answer after 2 tries → gap)"]
     ZONE -->|Unclear after 2 tries ⚑| REST
     REST --> RECAP["Recap: candidate confirms or corrects"]
     RECAP --> RULES{"Any ⚑?"}
@@ -109,7 +109,7 @@ Each outcome has a reason and a recruiter summary, and goes back to the ATS. Rec
 1. **Applications:** which ATS and job boards, and can they push applications to us? *Assumed: yes.*
 2. **Eligibility:** do you accept licenses from other countries? Are commuters from outside an area OK? *Today: a license from another country → a recruiter checks it; outside → not qualified.*
 3. **Next step:** call or visit; who publishes slots; review turnaround? *Today: 10-min call, slots per location, 1 working day.*
-4. **Legal sign-off:** automated knockouts with human review on request, notices, retention of transcripts and audio, and where data is processed (ES/MX). *Today: contestable knockouts; audio deleted after transcription; processed in the EU (a Mexico region is possible if required). One exception keeps the chat answering: if the EU model fails, a backup model outside the EU replies to that message. EU-only options: a second EU model as the backup, or Claude in the EU once quota is approved.*
+4. **Legal sign-off:** automated knockouts with human review on request, notices, retention of transcripts and audio, and where data is processed (ES/MX). *Today: knockouts can be contested; audio deleted after transcription; the demo calls the model providers' APIs, outside the EU, with made-up data; real candidates' data would be processed in the EU on Vertex AI (or in Mexico if required).*
 5. **Baseline:** current time-to-hire and hire rate of phone-screened candidates? *Today: unknown; needed to measure impact.*
 
 ## Appendix: example messages

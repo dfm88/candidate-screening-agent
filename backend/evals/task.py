@@ -37,6 +37,13 @@ CONFIG = load_client_config(DEFAULT_CLIENT_CONFIG)
 # --- The dataset ---------------------------------------------------------------------------------------------
 
 
+class ScriptedDecision(BaseModel):
+    """A recruiter's decision, landing between two scripted turns as it does in the service: a template in the chat."""
+
+    after_turn: int = Field(ge=1, description="The decision lands after this many scripted turns.")
+    outcome: Literal[Outcome.QUALIFIED, Outcome.NOT_QUALIFIED]
+
+
 class Persona(BaseModel):
     """The case inputs: the application, the clock, and who the candidate is (for the simulator, in English)."""
 
@@ -48,6 +55,7 @@ class Persona(BaseModel):
     max_turns: int = 14
     # Fixed candidate messages, one list per turn, sent instead of the simulator's: a replayed failure.
     script: list[list[str]] | None = None
+    decision: ScriptedDecision | None = None
 
 
 class ExpectedAnswers(BaseModel):
@@ -84,6 +92,8 @@ Asked = FieldName | Literal["recap", "talent_pool", "other"]
 class Turn(BaseModel):
     candidate: list[str]
     reply: list[str]
+    # Templates we sent after the reply, before the candidate's next message: the recruiter's decision.
+    sent_after: list[str] = []
     # The simulator's reading of `reply`: what it asked the candidate for.
     asked_about: list[Asked] = []
     tool_calls: list[str]
@@ -112,6 +122,8 @@ class ScreeningRun(BaseModel):
         for turn in self.turns:
             lines += [f"{candidate}: {message}" for message in turn.candidate]
             lines += [f"{assistant}: {message}" for message in turn.reply]
+            # Labelled apart, so the judge can tell the hiring team's decision from the assistant's replies.
+            lines += [f"Hiring team (decision): {message}" for message in turn.sent_after]
         return "\n".join(lines)
 
 
@@ -195,6 +207,7 @@ def make_task(
         state = ScreeningState(status=Status.INVITED, language=application.language)
         conversation_id = f"eval-{uuid.uuid4().hex[:8]}"
         turns: list[Turn] = []
+        decision: Outcome | None = None
 
         for number in range(len(persona.script) if persona.script else persona.max_turns):
             if persona.script:
@@ -227,6 +240,7 @@ def make_task(
                 model=model,
                 now=persona.now,
                 conversation_id=conversation_id,
+                decision=decision,
             )
             seconds = time.perf_counter() - started
             state = result.state
@@ -255,6 +269,18 @@ def make_task(
                 cost_usd=None if None in costs else sum(cost or 0 for cost in costs),
             )
             turns.append(turn)
+            if persona.decision and persona.decision.after_turn == len(turns):
+                # Stored as the service stores it: a turn of its own in the history, and a message in the chat.
+                if state.status is not Status.COMPLETED:
+                    raise ValueError(f"the decision lands after turn {len(turns)}, but the screening hasn't finished")
+                turn.sent_after = CONFIG.render(
+                    f"decision_{persona.decision.outcome}",
+                    Locale.of(state.language, location.country),
+                    first_name=application.first_name,
+                    city=location.city,
+                )
+                stored_turns.append([ModelResponse(parts=[TextPart("\n\n".join(turn.sent_after))])])
+                decision = persona.decision.outcome
             increment_eval_metric("turns", 1)
             increment_eval_metric("agent_input_tokens", turn.input_tokens)
             increment_eval_metric("agent_cache_read_tokens", turn.cache_read_tokens)

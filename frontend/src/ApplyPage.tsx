@@ -9,9 +9,9 @@ const COPY = {
   es: {
     title: 'Reparte con nosotros: envía tu solicitud',
     intro: 'Después te hacemos unas preguntas rápidas por chat. Son unos 3 minutos.',
+    demo: 'Esto es una demo: usa datos inventados, no los tuyos.',
     name: 'Nombre y apellidos',
     phone: 'Teléfono',
-    phoneHint: 'Demo: usa un número inventado.',
     vacancy: 'Dónde quieres repartir',
     choose: 'Elige un restaurante',
     language: 'Idioma del chat',
@@ -31,9 +31,9 @@ const COPY = {
   en: {
     title: 'Deliver with us: send your application',
     intro: "Then we'll ask you a few quick questions by chat. It takes about 3 minutes.",
+    demo: 'This is a demo: use made-up details, not your own.',
     name: 'Full name',
     phone: 'Phone',
-    phoneHint: 'Demo: use a made-up number.',
     vacancy: 'Where you want to deliver',
     choose: 'Choose a restaurant',
     language: 'Chat language',
@@ -92,6 +92,8 @@ export default function ApplyPage() {
       <p className="text-sm font-semibold tracking-wide text-brand-600 uppercase">{form.data?.client_name}</p>
       <h1 className="mt-1 text-2xl font-bold text-stone-900">{copy.title}</h1>
       <p className="mt-2 text-stone-600">{copy.intro}</p>
+      {/* The demo logs whole conversations (LLM_CONTENT_LOGGING), so nobody should type real details. */}
+      <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{copy.demo}</p>
       {form.isError && <p className="mt-6 text-red-700">{copy.loadFailed}</p>}
 
       <form onSubmit={submit} className="mt-6 space-y-4">
@@ -128,7 +130,6 @@ export default function ApplyPage() {
             autoComplete="tel"
             className={field}
           />
-          <span className="mt-1 block text-xs font-normal text-stone-500">{copy.phoneHint}</span>
         </label>
 
         <label className="block text-sm font-medium text-stone-700">

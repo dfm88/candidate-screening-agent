@@ -61,6 +61,12 @@ class Candidate(Base):
     outcome: Mapped[Outcome | None] = mapped_column(index=True)
     state: Mapped[dict[str, Any]]
     summary: Mapped[dict[str, Any] | None]
+    # The recruiter's decision, final once made. Only the decision endpoint writes these and the worker never does, so
+    # a decision during a running turn is safe; `outcome` stays the rule's.
+    decided_outcome: Mapped[Outcome | None]
+    decided_by: Mapped[str | None]
+    decision_note: Mapped[str | None]
+    decided_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     first_reply_at: Mapped[datetime | None]
     last_inbound_at: Mapped[datetime | None]

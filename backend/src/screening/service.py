@@ -5,6 +5,7 @@ import asyncio
 import secrets
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from functools import partial
 
@@ -14,24 +15,62 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from pydantic_core import to_jsonable_python
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from screening.agent import history_from_turns, prompt_version, run_turn, write_summary
 from screening.channels import Channel
 from screening.config import ClientConfig, Language, Locale, Settings
-from screening.contract import Author, ChatEvent, ChatMessage, ChatStatus, Typing
+from screening.contract import Author, ChatEvent, ChatMessage, ChatStatus, Tab, Typing
 from screening.db import Candidate, Message, MessageKind, Source, Turn
-from screening.domain import Application, ScreeningState, Status
+from screening.domain import Application, Outcome, ScreeningState, Status
 
 ENDED = frozenset({Status.COMPLETED, Status.WITHDRAWN})
+# The recruiter's tabs. A decision is final, so a decided candidate stays where the decision put it whatever the chat
+# does next; withdrawn is closed either way. Abandoned and not qualified fall through to closed.
+TAB = case(
+    (Candidate.status == Status.WITHDRAWN, Tab.CLOSED.value),
+    (Candidate.decided_outcome == Outcome.QUALIFIED, Tab.READY.value),
+    (Candidate.decided_outcome.is_not(None), Tab.CLOSED.value),
+    (Candidate.status.in_([Status.PENDING, Status.INVITED, Status.IN_PROGRESS]), Tab.IN_PROGRESS.value),
+    (Candidate.outcome == Outcome.QUALIFIED, Tab.READY.value),
+    (Candidate.outcome == Outcome.NEEDS_HUMAN_REVIEW, Tab.REVIEW.value),
+    else_=Tab.CLOSED.value,
+)
+# The recruiter's list shows the latest matches; search reaches the rest.
+LIST_LIMIT = 200
 
 
 def application_of(candidate: Candidate) -> Application:
     return Application(
         full_name=candidate.full_name, vacancy_location_id=candidate.vacancy_location_id, language=candidate.language
     )
+
+
+async def store_template(
+    session: AsyncSession, candidate_id: uuid.UUID, key: str, bubbles: list[str], quick_replies: Sequence[str] = ()
+) -> list[Message]:
+    """A message we send from a template, stored as a turn of its own: the agent sees everything we send."""
+    history: list[ModelMessage] = [ModelResponse(parts=[TextPart("\n\n".join(bubbles))])]
+    turn = Turn(candidate_id=candidate_id, messages=ModelMessagesTypeAdapter.dump_python(history, mode="json"))
+    session.add(turn)
+    await session.flush()
+    messages = [
+        Message(
+            candidate_id=candidate_id,
+            author=Author.ASSISTANT,
+            kind=MessageKind.TEMPLATE,
+            template_key=key,
+            text=bubble,
+            # Under the last bubble only.
+            quick_replies=list(quick_replies) if number == len(bubbles) - 1 else [],
+            turn_id=turn.id,
+        )
+        for number, bubble in enumerate(bubbles)
+    ]
+    session.add_all(messages)
+    return messages
 
 
 class ScreeningService:
@@ -91,30 +130,11 @@ class ScreeningService:
                 summary=None,
                 last_outbound_at=datetime.now(UTC),
             )
-            # Our first message is part of the conversation the agent sees, like any message we send.
-            history: list[ModelMessage] = [ModelResponse(parts=[TextPart("\n\n".join(bubbles))])]
             try:
                 session.add(candidate)
                 await session.flush()
-                turn = Turn(
-                    candidate_id=candidate.id, messages=ModelMessagesTypeAdapter.dump_python(history, mode="json")
-                )
-                session.add(turn)
-                await session.flush()
                 quick_replies = [self.config.label(locale, "start"), self.config.label(locale, "not_interested")]
-                session.add_all(
-                    Message(
-                        candidate_id=candidate.id,
-                        author=Author.ASSISTANT,
-                        kind=MessageKind.TEMPLATE,
-                        template_key="first_message",
-                        text=bubble,
-                        # Under the last bubble only.
-                        quick_replies=quick_replies if number == len(bubbles) - 1 else [],
-                        turn_id=turn.id,
-                    )
-                    for number, bubble in enumerate(bubbles)
-                )
+                await store_template(session, candidate.id, "first_message", bubbles, quick_replies)
                 await session.commit()
             except IntegrityError:
                 # The same application submitted twice at once: the other request stored it.
@@ -132,6 +152,78 @@ class ScreeningService:
                 select(Message).where(Message.candidate_id == candidate_id, Message.id > after_id).order_by(Message.id)
             )
             return [ChatMessage.model_validate(row) for row in rows]
+
+    async def candidates(
+        self, tab: Tab | None, query: str | None
+    ) -> tuple[list[tuple[Candidate, Tab]], dict[Tab, int]]:
+        """The recruiter's list, newest first, and how many candidates each tab holds."""
+        found = select(Candidate, TAB).order_by(Candidate.created_at.desc()).limit(LIST_LIMIT)
+        if tab is not None:
+            # TAB is a SQL expression, not a constant: flipped as SIM300 wants, it would type as a bool.
+            found = found.where(TAB == tab)  # noqa: SIM300
+        if query:
+            found = found.where(
+                or_(
+                    Candidate.full_name.icontains(query, autoescape=True),
+                    Candidate.phone.icontains(query, autoescape=True),
+                )
+            )
+        # Grouped by the label: Postgres can't tell that two copies of the CASE, with their own parameters, are equal.
+        tab_column = TAB.label("tab")
+        async with self.sessionmaker() as session:
+            rows = (await session.execute(found)).tuples().all()
+            counts = (await session.execute(select(tab_column, func.count()).group_by(tab_column))).tuples().all()
+        return [(candidate, Tab(tab)) for candidate, tab in rows], {Tab(tab): count for tab, count in counts}
+
+    async def candidate(self, candidate_id: uuid.UUID) -> tuple[Candidate, Tab, list[Message]] | None:
+        """One candidate for the recruiter, with the whole chat."""
+        async with self.sessionmaker() as session:
+            row = (await session.execute(select(Candidate, TAB).where(Candidate.id == candidate_id))).tuples().first()
+            if row is None:
+                return None
+            messages = await session.scalars(
+                select(Message).where(Message.candidate_id == candidate_id).order_by(Message.id)
+            )
+            return row[0], Tab(row[1]), list(messages)
+
+    async def decide(
+        self, candidate_id: uuid.UUID, outcome: Outcome, note: str | None, decided_by: str
+    ) -> Candidate | None:
+        """Record the recruiter's decision on a finished screening and tell the candidate with a template. The decision
+        is final: None when there already is one, or the screening hasn't finished."""
+        now = datetime.now(UTC)
+        async with self.sessionmaker() as session, session.begin():
+            # One conditional statement, so two recruiters deciding at once can't both send the template.
+            candidate = await session.scalar(
+                update(Candidate)
+                .where(
+                    Candidate.id == candidate_id,
+                    Candidate.status == Status.COMPLETED,
+                    Candidate.decided_outcome.is_(None),
+                )
+                .values(
+                    decided_outcome=outcome,
+                    decided_by=decided_by,
+                    decision_note=note,
+                    decided_at=now,
+                    last_outbound_at=now,
+                )
+                .returning(Candidate)
+            )
+            if candidate is None:
+                return None
+            state = ScreeningState.model_validate(candidate.state)
+            location = self.config.locations_by_id[candidate.vacancy_location_id]
+            key = f"decision_{outcome}"
+            bubbles = self.config.render(
+                key,
+                Locale.of(state.language, location.country),
+                first_name=application_of(candidate).first_name,
+                city=location.city,
+            )
+            messages = await store_template(session, candidate.id, key, bubbles)
+        await self.channel.publish(candidate.id, [ChatMessage.model_validate(message) for message in messages])
+        return candidate
 
     async def receive(self, candidate: Candidate, text: str, client_id: str) -> ChatMessage:
         """Store a candidate message, echo it, and wake the conversation's worker. A retried send is stored once."""
@@ -247,6 +339,8 @@ class ScreeningService:
                     model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
                     turn_timeout=self.settings.turn_timeout,
                     usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
+                    # Read from its own column on every turn, so a decision made since the last one counts.
+                    decision=candidate.decided_outcome,
                 )
             except Exception as error:
                 # Every fallback model failed too, the turn ran out of time (RunTimedOut) or of requests
