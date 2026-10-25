@@ -24,6 +24,8 @@ npm install
 npm run dev                               # http://localhost:5173, proxies /api to :8000
 ```
 
+**Tests:** `cd backend && uv run pytest`. The API tests run the app against the compose Postgres, in a `screening_test` database they create with the migrations; the LLM is stubbed, so tests never call a model.
+
 **Configuration is environment-only.** `uv run --env-file .env` loads `backend/.env` into the process environment. The app settings, the Logfire SDK (`LOGFIRE_TOKEN`) and Google auth (`CLOUDSDK_CONFIG`) all read it from there, so there's no second loading mechanism to keep in sync. Logfire and GCP are optional: without a token, traces stay on the console. The frontend has no env file, because anything Vite exposes ends up in the public bundle.
 
 **Chat with the agent in the terminal** (in memory, no database):
@@ -32,6 +34,20 @@ npm run dev                               # http://localhost:5173, proxies /api 
 cd backend
 uv run --env-file .env python -m screening.cli --vacancy mx-cdmx-roma --name "José Hernández" --show-tools
 ```
+
+**Chat through the API** (the routes and models are in [`contract.py`](backend/src/screening/contract.py)): apply, open the event stream, then send messages from another terminal.
+
+```bash
+curl -sX POST localhost:8000/api/applications -H 'content-type: application/json' -d '{"submission_id": "'"$(uuidgen)"'",
+  "full_name": "José Hernández Ruiz", "phone": "+52 55 0000 0000", "vacancy_location_id": "mx-cdmx-roma", "language": "es"}'
+# → {"candidate_id": "…", "chat_url": "/chat/TOKEN"}
+curl -N localhost:8000/api/chat/TOKEN/events             # message / typing / status events; replays after Last-Event-ID
+curl -sX POST localhost:8000/api/chat/TOKEN/messages -H 'content-type: application/json' -d '{"text": "Empezar", "client_id": "1"}'
+```
+
+Each conversation has one worker in the API process. It waits for a burst of messages to settle (`CHAT_DEBOUNCE_SECONDS`), answers them in one turn, and stores the turn (the model messages, prompt version, models, usage) before publishing the reply. If every model fails, the candidate gets the "give me a moment" template once and the messages stay pending: the next message or a restart retries them. When the screening ends, the summary agent writes the recruiter's caveats and notes; the key data (every answer, the outcome and its reasons) are built by code from the saved state.
+
+**The candidate pages** (`frontend/`: React, Vite, Tailwind, React Router, TanStack Query). `/apply` is the public apply form; with `APPLY_ACCESS_CODE` set, the link to share is `/apply?code=…`, which fills the code in. Its confirmation opens the chat, or shows a QR code to continue on a phone. `/chat/TOKEN` is the mobile-first chat: it renders the event stream (and replays what it missed after a reconnect), shows the first message's suggested replies, a typing indicator, and closes the input once the candidate withdraws. `frontend/src/api.ts` mirrors `contract.py`.
 
 **Models and where candidate data goes.** Live turns run on Gemini through Vertex AI in the `eu` multi-region, so processing stays in the EU. If that model fails (an outage, or a run of rate limits), PydanticAI's `FallbackModel` hands the message to the last fallback, an OpenAI model through OpenAI's API, which is outside the EU. It keeps a live chat answering, and it only sees data when the primary fails. Whether that's acceptable is a client decision (open question 4 in the process design); the EU-only alternatives are a second EU model as the fallback, or Claude in the EU once the project has quota. Both models are set in `.env` (`SCREENING_MODEL`, `SCREENING_FALLBACK_MODELS`).
 

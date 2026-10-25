@@ -92,6 +92,14 @@ fi
 if gc secrets describe logfire-token >/dev/null 2>&1; then
   secrets="${secrets},LOGFIRE_TOKEN=logfire-token:latest"
 fi
+# The public apply form asks for this code (the reviewer link carries it); without it anyone with the URL can apply.
+if [[ -n "${APPLY_ACCESS_CODE:-}" ]]; then
+  log "APPLY_ACCESS_CODE secret"
+  upsert_secret apply-access-code "$APPLY_ACCESS_CODE"
+fi
+if gc secrets describe apply-access-code >/dev/null 2>&1; then
+  secrets="${secrets},APPLY_ACCESS_CODE=apply-access-code:latest"
+fi
 # The last fallback model (OpenAI) answers only when Vertex AI fails; without the key the app has no fallback.
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   log "OPENAI_API_KEY secret"

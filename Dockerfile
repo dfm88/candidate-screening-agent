@@ -25,4 +25,6 @@ ENV PATH="/app/backend/.venv/bin:$PATH" \
     PORT=8080
 EXPOSE 8080
 # Migrations run at start: acceptable with exactly one instance (see README, "Scaling").
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn screening.main:create_app --factory --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
+# Open chat streams would hold a graceful shutdown forever, and Cloud Run kills the instance 10 s after SIGTERM:
+# close them after 5 s so the app's own shutdown still runs. EventSource reconnects by itself.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn screening.main:create_app --factory --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*' --timeout-graceful-shutdown 5"]

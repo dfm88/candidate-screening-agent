@@ -7,7 +7,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from screening import api, db
-from screening.config import SERVICE_NAME, Settings
+from screening.agent import build_model
+from screening.channels import WebChatChannel
+from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Settings, load_client_config
+from screening.service import ScreeningService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -20,16 +23,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logfire.instrument_pydantic_ai(include_content=settings.llm_content_logging)
     engine = db.make_engine(settings.database_url)
     logfire.instrument_sqlalchemy(engine=engine)
+    service = ScreeningService(
+        sessionmaker=db.make_sessionmaker(engine),
+        config=load_client_config(DEFAULT_CLIENT_CONFIG),
+        settings=settings,
+        model=build_model(settings),
+        channel=WebChatChannel(),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await service.resume()
         yield
+        await service.stop()
         await engine.dispose()
 
     app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
     app.state.settings = settings
     app.state.engine = engine
-    app.state.sessionmaker = db.make_sessionmaker(engine)
+    app.state.service = service
     app.include_router(api.router)
     logfire.instrument_fastapi(app, excluded_urls="/api/health")
 

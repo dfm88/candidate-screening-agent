@@ -1,9 +1,16 @@
-:root {
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
-  color-scheme: light dark;
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  /* Chat colours: a warm accent for the brand, a soft green for the candidate's own bubbles. */
+  --color-brand-50: oklch(0.98 0.02 60);
+  --color-brand-100: oklch(0.95 0.05 60);
+  --color-brand-500: oklch(0.68 0.17 45);
+  --color-brand-600: oklch(0.6 0.17 42);
+  --color-brand-700: oklch(0.52 0.15 40);
+  --color-own: oklch(0.94 0.06 145);
 }
 
-body {
-  margin: 0;
-  padding: 16px;
+:root {
+  color-scheme: light;
 }

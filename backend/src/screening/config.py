@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     google_cloud_location: str = "eu"
     google_cloud_project: str | None = None
     max_history_messages: int = 50
+    # How long a burst of candidate messages may take to settle before one turn answers them all.
+    chat_debounce_seconds: float = 1.5
+    # Required by the public apply form when set (the reviewer link carries it); unset means no check.
+    apply_access_code: str | None = None
 
 
 class Country(StrEnum):
