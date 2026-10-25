@@ -1,5 +1,5 @@
-"""Evaluators: the process design's rules as deterministic checks, an LLM judge for tone and language, and the
-per-experiment numbers for the arena (latency, cost, cache share, which model answered)."""
+"""Evaluators: the process design's rules as deterministic checks, an LLM judge for tone, language and the summary,
+and the per-experiment numbers for the arena (latency, cost, cache share, which model answered)."""
 
 import asyncio
 import re
@@ -15,7 +15,7 @@ from pydantic_evals.evaluators.report_evaluator import ReportEvaluatorContext
 from pydantic_evals.reporting.analyses import ReportAnalysis, ScalarResult, TableResult
 
 from evals.task import CONFIG, Expected, Persona, ScreeningRun
-from screening.config import Country, Language
+from screening.config import Country
 from screening.domain import FieldName, ScreeningState, Status
 
 Context = EvaluatorContext[Persona, ScreeningRun, Expected]
@@ -174,56 +174,14 @@ class NoStandaloneAcknowledgement(Evaluator[Persona, ScreeningRun, Expected]):
         return {"no_standalone_ack": EvaluationReason(value=not found, reason=reason)}
 
 
-# Word lists read better as text than as hundreds of quoted literals.
-SPANISH_WORDS = set(
-    "de la que el en y los se del las un por con no una su para es al lo como más pero ya este sí porque esta "  # noqa: SIM905
-    "muy sin también me hay donde desde todo nos tu te tú mi tengo puedo vivo trabajo gracias hola qué cuándo "
-    "dónde estás eres tienes perfecto bueno pues vale".split()
-)
-ENGLISH_WORDS = set(
-    "the and to of a in is it you that i for on with have my be are can do not this but what your me we so just "  # noqa: SIM905
-    "live work yes thanks hi hello great when where how there please would like".split()
-)
-
-
-def detect_language(text: str) -> Language | None:
-    words = re.findall(r"[a-záéíóúñü]+", text.casefold())
-    spanish = sum(word in SPANISH_WORDS for word in words) + text.count("¿") + text.count("¡")
-    english = sum(word in ENGLISH_WORDS for word in words)
-    if spanish == english:
-        return None
-    return Language.ES if spanish > english else Language.EN
-
-
 @dataclass
-class ReplyLanguage(Evaluator[Persona, ScreeningRun, Expected]):
-    """Each reply is in the language of the candidate's last full sentence (a lone "ok" doesn't count); the saved
-    language matches at the end."""
+class SavedLanguage(Evaluator[Persona, ScreeningRun, Expected]):
+    """The language saved at the end, which reminders and the close use. Whether each reply follows the candidate's
+    language is the judge's call (language_quality): word-list heuristics gave false positives."""
 
     def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
-        expected = ctx.inputs.application_language
-        wrong: list[str] = []
-        checked = 0
-        for number, turn in enumerate(ctx.output.turns, start=1):
-            sentences = re.split(r"(?<=[.!?])\s+", " ".join(turn.candidate))
-            full = [sentence for sentence in sentences if word_count(sentence) >= 3]
-            if full and (language := detect_language(full[-1])):
-                expected = language
-            actual = detect_language(" ".join(turn.reply))
-            if actual is not None:
-                checked += 1
-                if actual != expected:
-                    wrong.append(f"turn {number}: {actual} (expected {expected})")
-        saved = ctx.output.state.language
-        return {
-            "reply_language": EvaluationReason(
-                value=1 - len(wrong) / checked if checked else 1.0, reason="; ".join(wrong) or None
-            ),
-            "saved_language": EvaluationReason(
-                value=saved == ctx.metadata.final_language,
-                reason=None if saved == ctx.metadata.final_language else f"{saved}",
-            ),
-        }
+        saved, wanted = ctx.output.state.language, ctx.metadata.final_language
+        return {"saved_language": EvaluationReason(value=saved == wanted, reason=None if saved == wanted else saved)}
 
 
 GENDERED_WORDS = set(
@@ -269,33 +227,52 @@ RUBRICS = {
     "naturalness": "The assistant's messages read like chat messages a person sends from a phone: short and varied, "
     "no stock phrase repeated turn after turn, nothing form-like or email-like, one thing at a time. Score 1.0 when "
     "natural throughout, lower for each stilted or repetitive message.",
-    "language_quality": "The assistant writes fluent, correct text in the language the candidate writes in, with no "
-    "grammar or spelling mistakes. In Spanish it uses the variant of the country of work given in the input (Spain "
-    "or Mexico), with tú, and no words typical of the other country. Score 1.0 when flawless, lower for each error.",
+    "language_quality": "Each assistant reply is in the language of the candidate's last full sentence, Spanish or "
+    "English (a lone word like 'ok' doesn't switch it), and is fluent and correct, with no grammar or spelling "
+    "mistakes. In Spanish it uses the variant of the country of work given in the input (Spain or Mexico), with tú, "
+    "and no words typical of the other country. Score 1.0 when flawless, lower for each reply in the wrong language "
+    "or each error.",
 }
+SUMMARY_RUBRIC = (
+    "The output is a recruiter's summary of the chat in the input. Every caveat and note comes from something the "
+    "candidate said in the transcript; nothing in it is missing from the transcript or contradicts it, and it makes "
+    "no guess about the person (reliability, motivation, age, origin, gender). Score 1.0 when every item holds, lower "
+    "for each item that doesn't."
+)
 
 
 @dataclass
 class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
-    """LLM judge for what code can't check. It sees the transcript and the country only, not the state dumps that
-    LLMJudge would serialize from the whole output, so it grades the conversation the candidate saw."""
+    """LLM judge for what code can't check. It sees the transcript, the country and the name, not the state dumps that
+    LLMJudge would serialize from the whole output, so it grades the conversation the candidate saw. The summary is
+    graded against the transcript. A scripted case is a fragment, not a conversation: it isn't judged."""
 
     model: str
     model_settings: ModelSettings | None = None
 
     async def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        if ctx.inputs.script:
+            return {}
         country = CONFIG.locations_by_id[ctx.inputs.vacancy].country
-        context = f"Country of work: {'Spain' if country is Country.ES else 'Mexico'}."
-        transcript = ctx.output.transcript()
-        gradings = await asyncio.gather(
-            *(
-                judge_input_output(context, transcript, rubric, self.model, self.model_settings)
-                for rubric in RUBRICS.values()
-            )
+        # The name comes from the application, so the assistant may use it before the candidate gives it.
+        context = (
+            f"Country of work: {'Spain' if country is Country.ES else 'Mexico'}. "
+            f"Name on the application: {ctx.inputs.name_on_application}."
         )
+        transcript = ctx.output.transcript()
+        gradings = {
+            name: judge_input_output(context, transcript, rubric, self.model, self.model_settings)
+            for name, rubric in RUBRICS.items()
+        }
+        if ctx.output.summary:
+            summary = ctx.output.summary.model_dump_json(indent=2)
+            gradings["summary"] = judge_input_output(
+                transcript, summary, SUMMARY_RUBRIC, self.model, self.model_settings
+            )
+        results = await asyncio.gather(*gradings.values())
         return {
             name: EvaluationReason(value=grading.score, reason=grading.reason)
-            for name, grading in zip(RUBRICS, gradings, strict=True)
+            for name, grading in zip(gradings, results, strict=True)
         }
 
 

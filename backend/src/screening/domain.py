@@ -374,12 +374,46 @@ def save_answers(
 
 
 def compute_outcome(state: ScreeningState) -> tuple[Outcome, list[str]]:
-    """A knockout "no" → not qualified; an unclear required field or a review flag → review; else qualified."""
-    if state.knockout:
-        return Outcome.NOT_QUALIFIED, [state.knockout]
-    reasons = [f"{field} unclear: {note}" for field, note in state.unclear.items() if field in REQUIRED]
+    """A knockout "no" → not qualified; an unclear required field or a review flag → review; else qualified.
+
+    The reasons list every one that applies, so a person asked for after a knockout shows next to it."""
+    reasons: list[str] = [state.knockout] if state.knockout else []
+    reasons += [f"{field} unclear: {note}" for field, note in state.unclear.items() if field in REQUIRED]
     reasons += [f"{flag.reason}: {flag.detail}" if flag.detail else flag.reason for flag in state.flags]
+    if state.knockout:
+        return Outcome.NOT_QUALIFIED, reasons
     return (Outcome.NEEDS_HUMAN_REVIEW if reasons else Outcome.QUALIFIED), reasons
+
+
+class KeyData(BaseModel):
+    """What the recruiter reads first. Built by code from the saved state; no model writes it."""
+
+    answers: dict[FieldName, str]
+    outcome: Outcome | None
+    reasons: list[str]
+    talent_pool_opt_in: bool | None
+    open_questions: list[str]
+
+
+def key_data(state: ScreeningState, config: ClientConfig) -> KeyData:
+    saved = describe_saved(state, config)
+    answers = {
+        field: saved.get(field) or (f"unclear: {state.unclear[field]}" if field in state.unclear else "not answered")
+        for field in FIELD_ORDER
+    }
+    area = state.answers.area
+    if area and area.location_id:
+        # "Madrid Chamberí (28015)" read as "28015 is in Chamberí" to the summary agent: name the restaurant as one.
+        where = ", ".join(value for value in (area.postal_code, area.place) if value)
+        restaurant = config.locations_by_id[area.location_id].name
+        answers[FieldName.SERVICE_AREA] = f"lives at {where}, in the area of the {restaurant} restaurant"
+    return KeyData(
+        answers=answers,
+        outcome=state.outcome,
+        reasons=compute_outcome(state)[1],
+        talent_pool_opt_in=state.talent_pool_opt_in,
+        open_questions=state.open_questions,
+    )
 
 
 class FinishResult(BaseModel):

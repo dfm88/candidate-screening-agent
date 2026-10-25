@@ -41,11 +41,16 @@ To run the production image locally: `docker compose --profile app up --build` (
 
 ## Evals
 
-The process design is enforced by evals, not unit tests. `backend/evals/` (Pydantic Evals) runs synthetic candidates from `cases.yaml`, in both countries and in Spanish and English, against the real agent. A simulated candidate (an LLM playing the persona) chats with the agent in memory until the conversation ends, and labels what each agent message asked for. Then:
+The process design is enforced by evals, not unit tests. `backend/evals/` (Pydantic Evals) runs synthetic candidates from `cases.yaml`, in both countries and in Spanish and English, against the real agent. A simulated candidate (an LLM playing the persona) chats with the agent in memory until the conversation ends, and labels what each agent message asked for; then the summary agent writes the recruiter summary. Then:
 
-- **Deterministic checks** carry the process rules: the outcome and review reasons, the saved answers, knockouts asked first, nothing asked again, at most two tries per field, message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent as a message on its own, reply language, the country's regional terms and gender-neutral wording. They decide the ranking.
-- **An LLM judge** (OpenAI `gpt-6-luna`) scores tone, naturalness and language quality. Its scores on OpenAI rows are marked: judges tend to favour their own family's style.
-- **Per config:** p50/p95 latency per turn, cost per completed screening (genai-prices), the share of input tokens read from the provider's prompt cache, cache collapses flagged by PydanticAI's instrumentation, and which model answered each turn.
+- **Deterministic checks** carry the process rules: the outcome and review reasons, the saved answers, knockouts asked first, nothing asked again, at most two tries per field, message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent as a message on its own, the language saved at the end, the country's regional terms and gender-neutral wording. They decide the ranking.
+- **An LLM judge** (OpenAI `gpt-6-luna`) scores tone, naturalness, language quality (including whether each reply follows the candidate's language) and the recruiter summary (nothing in it missing from the transcript or contradicting it). Its scores on OpenAI rows are marked: judges tend to favour their own family's style.
+- **Per config:** the thinking config the provider actually receives, p50/p95 latency per turn, cost per completed screening (genai-prices), the share of input tokens read from the provider's prompt cache, cache collapses flagged by PydanticAI's instrumentation, and which model answered each turn.
+- **Scripted cases** replay an observed failure: fixed candidate messages instead of the simulator, checked on the state after the last message. They're cheap to rerun many times and their input never changes. The simulated set covers whole conversations and runs before a prompt change is committed.
+
+**What the numbers can and can't show.**
+- The runs aren't deterministic: the simulator and the agent both sample. With 18 runs per row, one run moves a rate by 0.06. On the same prompt, 3.8 Flash scored 0.72 and 0.89 on `no_standalone_ack` in two runs, and its p95 ranged from 8 to 16 s. Rank on the real errors you read in the transcripts, not on decimals.
+- The process checks are code, but they read the simulator's labels (`asked_about`). A wrong label shows up as a failure.
 
 ```bash
 cd backend
@@ -53,6 +58,8 @@ uv run --group evals --env-file .env python -m evals.run --model google-cloud:ge
 uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash \
     --fallback openai:gpt-6-luna                                                                       # the demo config
 uv run --group evals --env-file .env python -m evals.run --model A --model B --repeat 2                # the arena
+uv run --group evals --env-file .env python -m evals.run --model A \
+    --case scripted_mx_foreign_license_not_a_no --repeat 5                                             # one scripted case
 ```
 
 `--settings '{"temperature": 0.2}'` merges into the model settings. Rate limits are retried with backoff (Pydantic Evals' `retry_task`), never handed to another model, so a row measures one config. Results are appended to [`backend/evals/results/arena.md`](backend/evals/results/arena.md); full transcripts land in `backend/evals/results/transcripts/` (not committed). The simulator and the judge only see synthetic data, so they may run outside the EU.
@@ -64,6 +71,7 @@ The arena on the final prompt (9 cases × 2 runs per model, 2026-10-24; full tab
 | | Gemini 3.8 Flash | Gemini 3.5 Flash | Gemini 3.5 Flash-Lite | gpt-6-luna |
 |---|---|---|---|---|
 | Runs in the EU | yes | yes | yes | no |
+| Thinking sent for `thinking=False` | `thinking_level` LOW (3.8 has no MINIMAL) | MINIMAL | MINIMAL | reasoning effort none |
 | All process checks | 0.97 | 0.94 | 0.97 | 0.99 |
 | Outcome right | 1.00 | 1.00 | **0.94** | 1.00 |
 | Nothing asked again | 1.00 | **0.67** | 0.94 | 0.94 |
@@ -79,7 +87,7 @@ The arena on the final prompt (9 cases × 2 runs per model, 2026-10-24; full tab
 - **Gemini 3.8 Flash is the only EU model with no process or outcome errors.** Its misses are style only (a closing "Muchas gracias" sent as its own message), and it has the best judge scores.
 - **3.5 Flash-Lite** is 3× faster and 4.6× cheaper, but once turned "I don't know if my Colombian license is valid in Mexico" into a "no" (a wrongful knockout) and asked for an area three times. **3.5 Flash** saves the name from the application before the candidate confirms it.
 - **gpt-6-luna** scores best on the checks and costs 40× less, but runs outside the EU, so it's the last fallback rather than the primary (open question 4).
-- **The cost of 3.8 Flash is mostly uncached input.** On Vertex AI it read only 2% of its input from the implicit prompt cache. In probes it cached nothing on requests under about 4K tokens and was inconsistent above, and our static prefix (instructions and tools) is about 3.4K tokens. We don't pad the prompt to reach a cache minimum. The history is append-only, so the models that cache keep their prefix: PydanticAI's cache-collapse detector stays at zero for them; Flash-Lite's collapses come from Gemini's best-effort implicit cache.
+- **The cost of 3.8 Flash is mostly uncached input.** On Vertex AI it read only 2% of its input from the implicit prompt cache. Google documents a 4,096-token minimum for 3.8 Flash, and our static prefix (instructions and tools) is about 3.4K tokens: in the evals it never hit below that, and only 9% of its calls hit above it. Identical 6.2K-token requests cached nothing on Vertex `eu` or `global`, and on the Gemini API they cached 4,435 tokens on 3 of 9 requests. So the gap comes from the model's best-effort implicit cache, not from Vertex. We don't pad the prompt to reach the minimum. The history is append-only, so the models that cache keep their prefix: PydanticAI's cache-collapse detector stays at zero for them; Flash-Lite's collapses come from Gemini's best-effort implicit cache.
 - **Latency is the trade-off.** p50 is about 3 s, but p95 varied between 10 and 16 s across runs of 3.8 Flash on Vertex's shared capacity. The arena runs again on the final prompt before the demo.
 
 ## Deployment (GCP)

@@ -20,6 +20,7 @@ from screening.domain import (
     Status,
     end_conversation,
     finish_screening,
+    key_data,
     lookup_place,
     match_postal_code,
     normalize_platforms,
@@ -247,3 +248,19 @@ def test_ending_for_conduct_closes_for_review_and_other_reasons_withdraw() -> No
     assert (state.status, state.outcome) == (Status.COMPLETED, Outcome.NEEDS_HUMAN_REVIEW)
     state = end_conversation(in_progress(), EndReason.NOT_INTERESTED)
     assert (state.status, state.outcome) == (Status.WITHDRAWN, None)
+
+
+def test_key_data_lists_every_field_and_every_reason_behind_the_outcome() -> None:
+    state = save(NewAnswers(full_name="Lucía Martín García", license=LicenseAnswer.NO))[0]
+    state.unclear[FieldName.SCHEDULE] = "kept changing"
+    state, _ = finish_screening(state)
+    data = key_data(request_human(state, "wants to explain"), CONFIG)
+    assert list(data.answers) == list(FieldName)
+    assert data.answers[FieldName.LICENSE] == "no"
+    assert data.answers[FieldName.SCHEDULE] == "unclear: kept changing"
+    assert data.answers[FieldName.START_DATE] == "not answered"
+    # A person asked for after the knockout shows next to it, and moves the outcome to review.
+    assert (data.outcome, data.reasons) == (
+        Outcome.NEEDS_HUMAN_REVIEW,
+        ["no_license", "human_requested: wants to explain"],
+    )

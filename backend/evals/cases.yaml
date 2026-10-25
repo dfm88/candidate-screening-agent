@@ -1,7 +1,32 @@
 # Eval cases: synthetic candidates, in both countries. The profile is for the simulator (in English); metadata
 # is what the screening should end with. All clocks are Wednesday 21 October 2026, 16:00 UTC: 18:00 in Spain,
 # 10:00 in Mexico. Don't copy these exchanges into the prompt as examples (AGENTS.md: changing the prompt).
+# A case with a `script` replays fixed candidate messages (an observed failure) instead of the simulator, and is
+# checked on the state after its last message.
 cases:
+  - name: scripted_mx_foreign_license_not_a_no
+    inputs:
+      vacancy: mx-mty-centro
+      name_on_application: Luis Alberto Pérez Gómez
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Luis, Colombian, living in Monterrey, with a Colombian license whose validity in Mexico he doesn't know.
+        Replayed from a Gemini 3.5 Flash-Lite run (2026-10-24) that saved license=no after a leading question.
+      script:
+        - ["Hola, sí, claro. Pregúntame 😊"]
+        - ["Sí, mi nombre completo es Luis Alberto Pérez Gómez."]
+        - ["Tengo licencia de Colombia, pero no estoy seguro si sirve para manejar en México; nunca lo he revisado."]
+        - ["No, por ahora solo tengo la licencia de Colombia. No estoy seguro si sirve en México; nunca lo he revisado."]
+    metadata:
+      tags: [mx, scripted, unclear]
+      status: in_progress
+      unclear: [license]
+      final_language: es
+      answers:
+        full_name: Luis Alberto Pérez Gómez
+        license: null
+
   - name: es_madrid_burst_qualified
     inputs:
       vacancy: es-mad-chamberi

@@ -104,6 +104,8 @@ class FaqEntry(BaseModel):
 class ClientConfig(BaseModel):
     client_name: str
     persona_name: str
+    # The language the recruiter summary is written in.
+    recruiter_language: Language
     synthetic: bool
     timings: Timings
     locations: list[Location]

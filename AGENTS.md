@@ -45,14 +45,19 @@ Write tests where they pay off:
 - Prompts live in the repo (`backend/src/screening/prompts/`) and stay client-agnostic: client knowledge (FAQ, regional glossary, persona) lives in the client config and is rendered into the instructions.
 - The prompt version is a hash of the rendered instructions (client data included) and the model settings, recorded on every turn and eval run. A changed FAQ is a changed prompt.
 - Prompts, tool names and descriptions are in English. The instructions carry the language rules and the client's regional glossary; each turn's state block gives the country of work.
-- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults.
+- Set model settings explicitly per agent (thinking, temperature). Don't rely on provider defaults. They live in code next to the prompt, never in YAML or env: they change with the prompt, are hashed into the same version and need the same eval run.
 - **Candidate data is processed in the EU** (Vertex AI `eu` multi-region). The one exception is the last fallback model, used only when the primary fails (see the README). Eval-only components (simulator, judge) see synthetic data only and may use other endpoints.
 - Spanish quality is checked by evals (regional terms, gender-neutral wording, fluency), because reviewers may not speak Spanish.
 
 **Changing the prompt**
 - **No eval-specific patches.** Never add a phrase, a name or an answer to the prompt just to make one case pass. Fix the general rule or the data instead, unless the item genuinely belongs in the prompt.
 - **Few-shot examples and eval cases stay separate.** Never paste a failing exchange into the prompt as an example and then test on that same case: that measures memorization. Write a different example that teaches the general behaviour, or vary the case in the eval. The failing case stays as a held-out check.
-- **Every observed failure becomes an eval case first, then the fix.** Judge the fix on the whole set, not only on that case.
+- **Every observed failure becomes an eval case first, then the fix.** Prefer a short scripted case (fixed candidate messages, then a check on the state and the tool calls): it replays the exact exchange and is cheap to rerun. Judge the fix on the whole simulated set, not only on that case; the simulated set runs before a prompt change is committed.
+
+**Running evals costs money: ask first**
+- Single cases (`--case`) while iterating are fine.
+- Before any full run or arena, state the configs, the number of runs and the estimated cost (agent + simulator + judge), and wait for an OK.
+- The user chooses the arena candidates: small or at most medium models, because in a chat latency matters as much as quality.
 
 ## Observability and privacy
 

@@ -1,7 +1,9 @@
-"""The eval task: a simulated candidate chats with the screening agent, in memory, until the conversation ends.
+"""The eval task: a candidate chats with the screening agent, in memory, until the conversation ends; then the
+summary agent writes the recruiter summary.
 
-The simulator plays a persona from cases.yaml and, before each reply, labels what the agent's latest messages
-asked for. The deterministic evaluators read those labels (knockouts first, no re-asks, at most two tries).
+The candidate is simulated: an LLM plays a persona from cases.yaml and, before each reply, labels what the agent's
+latest messages asked for. The deterministic evaluators read those labels (knockouts first, no re-asks, at most two
+tries). A scripted case replays fixed candidate messages instead, to reproduce an observed failure exactly.
 """
 
 import time
@@ -16,7 +18,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import increment_eval_metric
 
-from screening.agent import history_from_turns, run_turn
+from screening.agent import RecruiterSummary, history_from_turns, run_turn, write_summary
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Locale, load_client_config
 from screening.domain import (
     Application,
@@ -44,6 +46,8 @@ class Persona(BaseModel):
     now: datetime
     profile: str
     max_turns: int = 14
+    # Fixed candidate messages, one list per turn, sent instead of the simulator's: a replayed failure.
+    script: list[list[str]] | None = None
 
 
 class ExpectedAnswers(BaseModel):
@@ -98,6 +102,8 @@ class ScreeningRun(BaseModel):
     first_message: list[str]
     turns: list[Turn]
     state: ScreeningState
+    # Written once the screening ends (completed or withdrawn).
+    summary: RecruiterSummary | None = None
 
     def transcript(self, assistant: str = "Assistant", candidate: str = "Candidate") -> str:
         lines = [f"{assistant}: {message}" for message in self.first_message]
@@ -188,17 +194,21 @@ def make_task(
         conversation_id = f"eval-{uuid.uuid4().hex[:8]}"
         turns: list[Turn] = []
 
-        for _ in range(persona.max_turns):
-            candidate = await simulator.run(
-                candidate_prompt(first_message, turns),
-                deps=persona,
-                model=simulator_model,
-                model_settings=SIMULATOR_SETTINGS,
-            )
-            if turns:
-                turns[-1].asked_about = candidate.output.asked_about
+        for number in range(len(persona.script) if persona.script else persona.max_turns):
+            if persona.script:
+                messages, done = persona.script[number], False
+            else:
+                candidate = await simulator.run(
+                    candidate_prompt(first_message, turns),
+                    deps=persona,
+                    model=simulator_model,
+                    model_settings=SIMULATOR_SETTINGS,
+                )
+                if turns:
+                    turns[-1].asked_about = candidate.output.asked_about
+                messages, done = candidate.output.messages, candidate.output.done
             # A last message ("no, gracias") still goes out before the candidate leaves.
-            if not candidate.output.messages:
+            if not messages:
                 break
 
             started = time.perf_counter()
@@ -206,7 +216,7 @@ def make_task(
                 state=state,
                 application=application,
                 config=CONFIG,
-                candidate_messages=candidate.output.messages,
+                candidate_messages=messages,
                 history=history_from_turns(stored_turns, max_history_messages),
                 model=model,
                 now=persona.now,
@@ -219,7 +229,7 @@ def make_task(
             responses = [message for message in result.messages if isinstance(message, ModelResponse)]
             costs = [response_cost(response) for response in responses]
             turn = Turn(
-                candidate=candidate.output.messages,
+                candidate=messages,
                 reply=result.reply,
                 tool_calls=[part.tool_name for r in responses for part in r.parts if isinstance(part, ToolCallPart)],
                 models=[response.model_name or "unknown" for response in responses],
@@ -235,9 +245,14 @@ def make_task(
             increment_eval_metric("agent_input_tokens", turn.input_tokens)
             increment_eval_metric("agent_cache_read_tokens", turn.cache_read_tokens)
             increment_eval_metric("agent_cost_usd", turn.cost_usd or 0)
-            if candidate.output.done:
+            if done:
                 break
 
-        return ScreeningRun(first_message=first_message, turns=turns, state=state)
+        run = ScreeningRun(first_message=first_message, turns=turns, state=state)
+        if state.status in (Status.COMPLETED, Status.WITHDRAWN):
+            run.summary = await write_summary(
+                state, application, CONFIG, run.transcript(), model, persona.now, conversation_id
+            )
+        return run
 
     return screen

@@ -1,4 +1,5 @@
-"""The screening agent: one conversational agent with tools, steered by prompts/screening_agent.md.
+"""The two agents. The screening agent holds the conversation, with tools, steered by prompts/screening_agent.md;
+the summary agent writes the recruiter's caveats and notes once the screening ends (prompts/summary_agent.md).
 
 The conversation lives in the prompt and is verified by evals. The tools hand the facts we own to domain.py:
 service areas, dates, the saved state and the outcome.
@@ -13,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import logfire
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelMessage, RunContext
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.fallback import FallbackModel
@@ -22,7 +24,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
 from screening import domain
-from screening.config import ClientConfig, Country, Settings
+from screening.config import ClientConfig, Country, Language, Settings
 from screening.domain import (
     Application,
     EndReason,
@@ -34,8 +36,12 @@ from screening.domain import (
     transition,
 )
 
-PROMPT = (Path(__file__).parent / "prompts" / "screening_agent.md").read_text(encoding="utf-8")
+PROMPTS = Path(__file__).parent / "prompts"
+PROMPT = (PROMPTS / "screening_agent.md").read_text(encoding="utf-8")
 MODEL_SETTINGS = ModelSettings(temperature=0.4, thinking=False)
+SUMMARY_PROMPT = (PROMPTS / "summary_agent.md").read_text(encoding="utf-8")
+SUMMARY_SETTINGS = ModelSettings(temperature=0.2, thinking=False)
+LANGUAGE_NAMES = {Language.ES: "Spanish", Language.EN: "English"}
 
 
 @dataclass
@@ -58,9 +64,15 @@ def render_instructions(config: ClientConfig) -> str:
     return PROMPT.format(persona=config.persona_name, client=config.client_name, faq=faq, regional_terms=regional_terms)
 
 
+def render_summary_instructions(config: ClientConfig) -> str:
+    return SUMMARY_PROMPT.format(client=config.client_name, language=LANGUAGE_NAMES[config.recruiter_language])
+
+
 def prompt_version(config: ClientConfig, model_settings: ModelSettings = MODEL_SETTINGS) -> str:
-    """Recorded on every turn and eval run: a changed prompt, client data or model setting is a new version."""
+    """Recorded on every turn and eval run: a changed prompt, client data or model setting of either agent is a new
+    version, because the evals measure both together."""
     content = render_instructions(config) + json.dumps(model_settings, sort_keys=True)
+    content += render_summary_instructions(config) + json.dumps(SUMMARY_SETTINGS, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()[:8]
 
 
@@ -237,3 +249,60 @@ async def run_turn(
 
     reply = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", result.output) if paragraph.strip()]
     return TurnResult(reply=reply, state=deps.state, messages=result.new_messages(), usage=result.usage)
+
+
+# --- The recruiter summary -------------------------------------------------------------------------------------
+
+
+class RecruiterSummary(BaseModel):
+    """Shown as it is at the top of the recruiter's detail page, under the key data."""
+
+    caveats: list[str] = Field(
+        max_length=3, description="What the recruiter should check before deciding, in plain words. One line each."
+    )
+    notes: list[str] = Field(
+        max_length=3, description="Worth knowing from the conversation, and not in the answers. One line each."
+    )
+
+
+summary_agent = Agent(
+    deps_type=ClientConfig, output_type=RecruiterSummary, model_settings=SUMMARY_SETTINGS, name="summary"
+)
+
+
+@summary_agent.instructions
+def summary_instructions(ctx: RunContext[ClientConfig]) -> str:
+    return render_summary_instructions(ctx.deps)
+
+
+async def write_summary(
+    state: ScreeningState,
+    application: Application,
+    config: ClientConfig,
+    transcript: str,
+    model: Model,
+    now: datetime,
+    conversation_id: str,
+) -> RecruiterSummary:
+    """Runs once when the screening ends. The key data come from code; the summary adds what they don't hold."""
+    data = domain.key_data(state, config)
+    location = config.locations_by_id[application.vacancy_location_id]
+    # Without today's date, a start date of today next to "I can start right away" looks like a discrepancy.
+    lines = [f"today: {now.astimezone(location.tz):%Y-%m-%d (%A)}"]
+    lines += [f"{field}: {answer}" for field, answer in data.answers.items()]
+    lines += [
+        f"status: {state.status}",
+        f"outcome: {data.outcome or 'none'}",
+        "reasons: " + ("; ".join(data.reasons) or "none"),
+        "open questions: " + ("; ".join(data.open_questions) or "none"),
+    ]
+    # Both blocks hold candidate text: escaped, so nothing in them can close a block or open a new one.
+    screening = html.escape("\n".join(lines), quote=False)
+    prompt = (
+        f"<screening>\n{screening}\n</screening>\n<transcript>\n{html.escape(transcript, quote=False)}\n</transcript>"
+    )
+    with logfire.span(
+        "screening summary {conversation_id}", conversation_id=conversation_id, prompt_version=prompt_version(config)
+    ):
+        result = await summary_agent.run(prompt, deps=config, model=model)
+    return result.output

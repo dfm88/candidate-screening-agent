@@ -12,12 +12,14 @@ Each --model is one experiment and one row; --fallback and --settings apply to e
 import argparse
 import asyncio
 import json
+import re
 import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 
 import logfire
 from pydantic_ai.exceptions import ModelHTTPError, ModelRateLimitError, ModelUnavailableError
+from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.retries import RetryConfig, wait_retry_after
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import Dataset
@@ -34,8 +36,8 @@ from evals.evaluators import (
     MessageShape,
     NoStandaloneAcknowledgement,
     OutcomeMatches,
-    ReplyLanguage,
     SavedAnswers,
+    SavedLanguage,
     SpanishWording,
 )
 from evals.task import CONFIG, Expected, Persona, ScreeningRun, make_task
@@ -58,7 +60,8 @@ ASSERTIONS = [
     "regional_terms",
     "gender_neutral",
 ]
-SCORES = ["saved_answers", "message_shape", "reply_language"]
+SCORES = ["saved_answers", "message_shape"]
+JUDGE_SCORES = [*RUBRICS, "summary"]
 
 
 def is_transient(error: BaseException) -> bool:
@@ -87,7 +90,7 @@ def load_dataset(case_names: list[str]) -> Dataset[Persona, ScreeningRun, Expect
         Asking(),
         MessageShape(),
         NoStandaloneAcknowledgement(),
-        ReplyLanguage(),
+        SavedLanguage(),
         SpanishWording(),
         CacheHealth(),
         ConversationJudge(model=JUDGE, model_settings=JUDGE_SETTINGS),
@@ -97,19 +100,19 @@ def load_dataset(case_names: list[str]) -> Dataset[Persona, ScreeningRun, Expect
     return dataset
 
 
-def mean(values: list[float]) -> float | None:
-    return statistics.fmean(values) if values else None
+def thinking_sent(model: Model, model_settings: ModelSettings) -> str:
+    """What the provider receives for `thinking`: the same setting differs per model. thinking=False is MINIMAL on
+    Gemini 3.5 Flash but LOW on 3.8 Flash, which has no MINIMAL."""
+    settings, parameters = model.prepare_request(model_settings, ModelRequestParameters())
+    # `_translate_thinking` is private in 2.61, but it's where each adapter resolves the level per model; copying
+    # that logic here would drift from what is actually sent.
+    translate = getattr(model, "_translate_thinking", None)
+    return str(translate(settings or {}, parameters)) if translate else f"thinking={parameters.thinking}"
 
 
-def arena_row(report: EvaluationReport, judged_by_own_family: bool) -> dict[str, str]:
-    cases = report.cases
-
-    def rate(name: str) -> float | None:
-        return mean([float(case.assertions[name].value) for case in cases if name in case.assertions])
-
-    def score(name: str) -> float | None:
-        return mean([float(case.scores[name].value) for case in cases if name in case.scores])
-
+def arena_row(report: EvaluationReport, thinking: str, judged_by_own_family: bool) -> dict[str, str]:
+    averages = report.averages()
+    scores = averages.scores if averages else {}
     analyses = {analysis.title: analysis for analysis in report.analyses}
     numbers = {title: a.value for title, a in analyses.items() if isinstance(a, ScalarResult)}
     by_model = analyses.get("responses by model")
@@ -119,19 +122,26 @@ def arena_row(report: EvaluationReport, judged_by_own_family: bool) -> dict[str,
     def show(value: float | None, digits: int = 2) -> str:
         return "–" if value is None else f"{value:.{digits}f}"
 
-    row = {"config": report.name, "runs": f"{len(cases)} ok, {len(report.failures)} failed"}
-    row["all checks"] = show(
-        mean([float(c.assertions[n].value) for c in cases for n in ASSERTIONS if n in c.assertions])
-    )
+    def rate(name: str) -> float | None:
+        # averages() gives one pass rate over all assertions; the ranking needs it per check.
+        values = [case.assertions[name].value for case in report.cases if name in case.assertions]
+        return statistics.fmean(values) if values else None
+
+    row = {
+        "config": report.name,
+        "thinking sent": thinking,
+        "runs": f"{len(report.cases)} ok, {len(report.failures)} failed",
+        "all checks": show(averages.assertions if averages else None),
+    }
     row |= {name: show(rate(name)) for name in ASSERTIONS}
-    row |= {name: show(score(name)) for name in SCORES}
-    row |= {name: show(score(name)) + mark for name in RUBRICS}
+    row |= {name: show(scores.get(name)) for name in SCORES}
+    row |= {name: show(scores.get(name)) + mark for name in JUDGE_SCORES}
     row |= {
         "p50 s": show(numbers.get("p50 per turn"), 1),
         "p95 s": show(numbers.get("p95 per turn"), 1),
         "USD / completed": show(numbers.get("cost per completed screening"), 4),
         "cache share": show(numbers.get("cache share")),
-        "cache collapses": show(score("cache_collapses")),
+        "cache collapses": show(scores.get("cache_collapses")),
         "responses by model": models,
     }
     return row
@@ -164,7 +174,10 @@ def write_transcripts(report: EvaluationReport, path: Path) -> None:
             )
             parts += [quote("assistant", message) for message in turn.reply]
             parts.append(f"`asked: {', '.join(turn.asked_about) or '-'}`\n")
-        parts.append(f"Final: status={run.state.status} outcome={run.state.outcome}\n")
+        answers = run.state.answers
+        parts.append(f"Final: status={run.state.status} outcome={run.state.outcome} license={answers.license}\n")
+        if run.summary:
+            parts.append(f"Summary: {run.summary.model_dump_json()}\n")
     for failure in report.failures:
         parts.append(f"## {failure.name}\n\nTask failed: {failure.error_message}\n")
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -200,9 +213,14 @@ async def main(args: argparse.Namespace) -> None:
                 metadata={"prompt_version": version, "simulator": args.simulator, "judge": JUDGE},
             )
         report.print(include_reasons=True, include_durations=False)
-        write_transcripts(report, RESULTS / "transcripts" / f"{stamp}-{model_string.replace(':', '_')}.md")
+        # The settings are in the name, so two configs of one model started in the same minute get separate files.
+        write_transcripts(report, RESULTS / "transcripts" / f"{stamp}-{re.sub(r'[^\w.-]+', '_', name)}.md")
         judge_family = JUDGE.partition(":")[0]
-        return arena_row(report, any(m.startswith(judge_family + ":") for m in [model_string, *args.fallback]))
+        return arena_row(
+            report,
+            thinking_sent(model_from_string(model_string, settings), model_settings),
+            any(m.startswith(judge_family + ":") for m in [model_string, *args.fallback]),
+        )
 
     rows = await asyncio.gather(*(run_experiment(model_string) for model_string in args.model))
     table = markdown_table(rows)

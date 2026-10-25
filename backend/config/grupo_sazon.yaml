@@ -4,6 +4,7 @@
 
 client_name: Grupo Sazón
 persona_name: Sazi
+recruiter_language: es
 synthetic: true
 
 # ISO 8601 durations.
@@ -151,13 +152,13 @@ faq:
       trial period applies.
   - question: What are the shifts?
     answer: >-
-      Shifts follow the restaurant's peaks: lunch (about 12:30 to 16:30) and dinner (about 19:30 to 23:30),
-      Monday to Sunday. Part-time and weekend-only contracts exist. The exact schedule is agreed with the
-      restaurant manager.
+      Shifts cover the restaurant's opening hours, Monday to Sunday, and are busiest at lunch and dinner.
+      Part-time and weekend-only contracts exist. The schedule is agreed with the restaurant manager, with the
+      candidate's preference in mind.
   - question: Which licenses are accepted?
     answer: >-
-      Spain: a valid car license (B) or motorbike license (AM, A1, A2 or A). Mexico: a valid motorcycle or car
-      driver's license from the state where you work. The license must be valid today.
+      A car or motorbike license (in Spain B, AM, A1, A2 or A), valid today for driving in the country where you
+      work. The hiring team checks a license from another country.
   - question: Is there training?
     answer: >-
       Yes: a paid half-day induction on safety, the scooter and the delivery app before the first shift.
@@ -168,7 +169,6 @@ faq:
   - question: Is there a uniform?
     answer: Yes, Grupo Sazón provides the uniform and rain gear.
 
-# Quick-reply labels and the field names used in reminders.
 # The word each country uses for the same thing. The agent writes Spanish with the country of work's terms only;
 # the evals flag the other country's terms. One row per concept, every country filled in.
 regional_terms:
@@ -180,6 +180,7 @@ regional_terms:
   - {ES: media jornada, MX: medio tiempo}
   - {ES: equipo de selección, MX: equipo de reclutamiento}
 
+# Quick-reply labels and the field names used in reminders.
 labels:
   es-ES:
     start: Empezar
