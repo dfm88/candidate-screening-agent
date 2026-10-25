@@ -17,6 +17,7 @@ RECRUITER_PASSWORD isn't set). Writes are POST only: with the cookie's SameSite=
     GET  /api/recruiter/candidates?tab&q            → CandidateList (both optional; q matches the name or phone)
     GET  /api/recruiter/candidates/{id}             → CandidateDetail · 404
     POST /api/recruiter/candidates/{id}/decision    DecisionRequest → Decision · 409 not finished or already decided
+    GET  /api/recruiter/metrics                     → Metrics
 """
 
 from datetime import datetime
@@ -149,6 +150,8 @@ class CandidateRow(BaseModel):
     decided_outcome: Outcome | None
     reasons: list[str]
     tab: Tab
+    # Our last turns on the candidate's messages all failed: they're waiting for an answer, and the timed retry stopped.
+    replies_failed: bool
     created_at: datetime
 
 
@@ -187,6 +190,7 @@ class CandidateDetail(BaseModel):
     whatsapp_opt_in: bool
     status: Status
     tab: Tab
+    replies_failed: bool
     created_at: datetime
     completed_at: datetime | None
     key_data: KeyData
@@ -203,3 +207,23 @@ class DecisionRequest(BaseModel):
     # The recruiter is the person a review waits for: the decision is qualified or not.
     outcome: Literal[Outcome.QUALIFIED, Outcome.NOT_QUALIFIED]
     note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
+
+
+# Where an abandoned candidate stopped: before replying at all, at the next field to ask, or at the recap.
+DropOffStage = Literal["not_started", "recap"] | FieldName
+
+
+class Metrics(BaseModel):
+    """The recruiter page's metrics, computed from the database when asked. A rate is None while nothing counts
+    towards it. A screening is finished once it has the rules' outcome."""
+
+    applied: int
+    response_rate: float | None = Field(description="Of the applications, those who replied at least once.")
+    completion_rate: float | None = Field(description="Of those who replied, those whose screening finished.")
+    drop_off: dict[DropOffStage, int] = Field(description="Abandoned candidates by where they stopped.")
+    review_rate: float | None = Field(description="Of the finished screenings, those the rules sent to a person.")
+    overrides: int = Field(description="Decisions that differ from a rules' outcome of qualified or not qualified.")
+    override_rate: float | None = Field(
+        description="Of the rules' qualified and not-qualified outcomes a recruiter decided on, those they overturned."
+    )
+    median_seconds_to_outcome: int | None = Field(description="From applying to the rules' outcome.")

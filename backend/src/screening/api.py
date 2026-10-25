@@ -28,6 +28,7 @@ from screening.contract import (
     FieldMark,
     Login,
     MessageAccepted,
+    Metrics,
     Recruiter,
     Tab,
     TranscriptMessage,
@@ -211,9 +212,10 @@ async def list_candidates(service: Service, tab: Tab | None = None, q: str | Non
                 decided_outcome=candidate.decided_outcome,
                 reasons=compute_outcome(ScreeningState.model_validate(candidate.state))[1],
                 tab=candidate_tab,
+                replies_failed=replies_failed,
                 created_at=candidate.created_at,
             )
-            for candidate, candidate_tab in rows
+            for candidate, candidate_tab, replies_failed in rows
         ],
         counts={tab: counts.get(tab, 0) for tab in Tab},
     )
@@ -224,7 +226,7 @@ async def candidate_detail(candidate_id: uuid.UUID, service: Service) -> Candida
     found = await service.candidate(candidate_id)
     if found is None:
         raise HTTPException(status_code=404, detail="No such candidate.")
-    candidate, tab, messages = found
+    candidate, tab, replies_failed, messages = found
     config = service.config
     state = ScreeningState.model_validate(candidate.state)
     marks: dict[FieldName, FieldMark] = {}
@@ -254,6 +256,7 @@ async def candidate_detail(candidate_id: uuid.UUID, service: Service) -> Candida
         whatsapp_opt_in=candidate.whatsapp_opt_in,
         status=candidate.status,
         tab=tab,
+        replies_failed=replies_failed,
         created_at=candidate.created_at,
         completed_at=candidate.completed_at,
         key_data=key_data(state, config),
@@ -281,3 +284,8 @@ async def decide(candidate_id: uuid.UUID, body: DecisionRequest, name: Recruiter
         # Another recruiter decided in between.
         raise HTTPException(status_code=409, detail="Someone else decided just now. Reload the page.")
     return Decision(outcome=body.outcome, by=name, note=body.note, at=decided.decided_at)
+
+
+@recruiter_router.get("/metrics")
+async def metrics(service: Service) -> Metrics:
+    return await service.metrics()

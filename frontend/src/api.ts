@@ -79,6 +79,7 @@ export interface CandidateRow {
   decided_outcome: Outcome | null
   reasons: string[]
   tab: Tab
+  replies_failed: boolean
   created_at: string
 }
 
@@ -120,6 +121,7 @@ export interface CandidateDetail {
   whatsapp_opt_in: boolean
   status: Status
   tab: Tab
+  replies_failed: boolean
   created_at: string
   completed_at: string | null
   key_data: KeyData
@@ -134,6 +136,20 @@ export interface CandidateDetail {
 export interface DecisionRequest {
   outcome: 'qualified' | 'not_qualified'
   note: string | null
+}
+
+export type DropOffStage = 'not_started' | 'recap' | FieldName
+
+// A rate is null while nothing counts towards it.
+export interface Metrics {
+  applied: number
+  response_rate: number | null
+  completion_rate: number | null
+  drop_off: Partial<Record<DropOffStage, number>>
+  review_rate: number | null
+  overrides: number
+  override_rate: number | null
+  median_seconds_to_outcome: number | null
 }
 
 export class ApiError extends Error {
@@ -177,4 +193,5 @@ export const api = {
   candidate: (id: string) => request<CandidateDetail>(`/api/recruiter/candidates/${id}`),
   decide: (id: string, decision: DecisionRequest) =>
     request<Decision>(`/api/recruiter/candidates/${id}/decision`, { method: 'POST', body: JSON.stringify(decision) }),
+  metrics: () => request<Metrics>('/api/recruiter/metrics'),
 }

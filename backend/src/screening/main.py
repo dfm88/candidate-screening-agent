@@ -1,5 +1,7 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import logfire
 from fastapi import FastAPI
@@ -11,7 +13,7 @@ from screening import api, db
 from screening.agent import build_model
 from screening.channels import WebChatChannel
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Settings, load_client_config
-from screening.service import ScreeningService
+from screening.service import TICK_SECONDS, ScreeningService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -36,10 +38,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         channel=web_chat,
     )
 
+    async def tick_forever() -> None:
+        while True:
+            await asyncio.sleep(TICK_SECONDS)
+            try:
+                await service.tick(datetime.now(UTC))
+            except Exception:
+                # An edge: a failed tick (the database, say) is recorded, and the next one does its work.
+                logfire.exception("tick failed")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await service.resume()
+        ticking = asyncio.create_task(tick_forever(), name="tick")
         yield
+        ticking.cancel()
+        await asyncio.gather(ticking, return_exceptions=True)
         await service.stop()
         await engine.dispose()
 

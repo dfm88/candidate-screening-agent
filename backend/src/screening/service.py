@@ -1,12 +1,14 @@
-"""The core around a conversation: ingest, accepting candidate messages, and one worker per conversation that runs
-the turns. The database lives at this edge; domain.py and agent.py stay pure."""
+"""The core around a conversation: ingest, accepting candidate messages, one worker per conversation that runs the
+turns, and the clock's work (tick). The database lives at this edge; domain.py and agent.py stay pure."""
 
 import asyncio
 import secrets
 import time
 import uuid
+from collections import Counter
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
 from functools import partial
 
 import logfire
@@ -15,22 +17,54 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from pydantic_core import to_jsonable_python
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from screening.agent import history_from_turns, prompt_version, run_turn, write_summary
 from screening.channels import Channel
 from screening.config import ClientConfig, Language, Locale, Settings
-from screening.contract import Author, ChatEvent, ChatMessage, ChatStatus, Tab, Typing
+from screening.contract import Author, ChatEvent, ChatMessage, ChatStatus, DropOffStage, Metrics, Tab, Typing
 from screening.db import Candidate, Message, MessageKind, Source, Turn
-from screening.domain import Application, Outcome, ScreeningState, Status
+from screening.domain import Application, Outcome, ScreeningState, Status, transition
 
 ENDED = frozenset({Status.COMPLETED, Status.WITHDRAWN})
+# How often the lifespan calls tick().
+TICK_SECONDS = 30
+# Any constant, the same in every instance: two of them overlap while Cloud Run rolls out a revision.
+TICK_LOCK = 7_350_201
+# Pending messages older than this, with no worker on them, are retried by tick(). A live turn ends within
+# TURN_TIMEOUT (35 s), so they're left by a failed turn or a stopped process.
+RETRY_AFTER = timedelta(seconds=60)
+# Failed turns on the same pending messages before tick() stops retrying them: a turn that always fails (one that hits
+# the request limit, say) would cost a model run every minute.
+MAX_FAILED_TURNS = 3
+
+PENDING = and_(Message.author == Author.CANDIDATE, Message.turn_id.is_(None))
+# The rest are about the candidate of the query they're used in. Correlated explicitly: auto-correlation only reaches
+# the query right around a subquery, and OLDEST_PENDING sits two levels down inside REPLIES_FAILED, where it would
+# join every candidate instead.
+OLDEST_PENDING = (
+    select(func.min(Message.created_at))
+    .where(Message.candidate_id == Candidate.id, PENDING)
+    .correlate(Candidate)
+    .scalar_subquery()
+)
+# Our turns keep failing on the candidate's messages: tick() has stopped retrying, and the recruiter sees it in Review.
+# The candidate's next message or a restart tries again.
+REPLIES_FAILED = (
+    select(func.count())
+    .where(Turn.candidate_id == Candidate.id, Turn.error.is_not(None), Turn.created_at >= OLDEST_PENDING)
+    .correlate(Candidate)
+    .scalar_subquery()
+    >= MAX_FAILED_TURNS
+)
 # The recruiter's tabs. A decision is final, so a decided candidate stays where the decision put it whatever the chat
-# does next; withdrawn is closed either way. Abandoned and not qualified fall through to closed.
+# does next, unless our replies keep failing: someone has to look at that either way. Withdrawn is closed whatever
+# happened. Abandoned and not qualified fall through to closed.
 TAB = case(
     (Candidate.status == Status.WITHDRAWN, Tab.CLOSED.value),
+    (REPLIES_FAILED, Tab.REVIEW.value),
     (Candidate.decided_outcome == Outcome.QUALIFIED, Tab.READY.value),
     (Candidate.decided_outcome.is_not(None), Tab.CLOSED.value),
     (Candidate.status.in_([Status.PENDING, Status.INVITED, Status.IN_PROGRESS]), Tab.IN_PROGRESS.value),
@@ -73,6 +107,16 @@ async def store_template(
     return messages
 
 
+@dataclass
+class Tick:
+    """What one tick did, by candidate."""
+
+    abandoned: list[uuid.UUID] = field(default_factory=list)
+    reminded: list[uuid.UUID] = field(default_factory=list)
+    retried: list[uuid.UUID] = field(default_factory=list)
+    summarized: list[uuid.UUID] = field(default_factory=list)
+
+
 class ScreeningService:
     def __init__(
         self,
@@ -90,6 +134,9 @@ class ScreeningService:
         self._workers: dict[uuid.UUID, asyncio.Task[None]] = {}
         # Conversations that got a message after their worker last looked: it looks again before it stops.
         self._kicked: set[uuid.UUID] = set()
+        # Screenings this process has tried to summarize. tick() writes the summaries a restart lost; one that failed
+        # here is tried again after the next restart, not every tick.
+        self._summarized: set[uuid.UUID] = set()
 
     async def apply(
         self,
@@ -155,9 +202,10 @@ class ScreeningService:
 
     async def candidates(
         self, tab: Tab | None, query: str | None
-    ) -> tuple[list[tuple[Candidate, Tab]], dict[Tab, int]]:
-        """The recruiter's list, newest first, and how many candidates each tab holds."""
-        found = select(Candidate, TAB).order_by(Candidate.created_at.desc()).limit(LIST_LIMIT)
+    ) -> tuple[list[tuple[Candidate, Tab, bool]], dict[Tab, int]]:
+        """The recruiter's list, newest first, with whether our replies keep failing, and how many candidates each tab
+        holds."""
+        found = select(Candidate, TAB, REPLIES_FAILED).order_by(Candidate.created_at.desc()).limit(LIST_LIMIT)
         if tab is not None:
             # TAB is a SQL expression, not a constant: flipped as SIM300 wants, it would type as a bool.
             found = found.where(TAB == tab)  # noqa: SIM300
@@ -173,18 +221,65 @@ class ScreeningService:
         async with self.sessionmaker() as session:
             rows = (await session.execute(found)).tuples().all()
             counts = (await session.execute(select(tab_column, func.count()).group_by(tab_column))).tuples().all()
-        return [(candidate, Tab(tab)) for candidate, tab in rows], {Tab(tab): count for tab, count in counts}
+        return (
+            [(candidate, Tab(tab), replies_failed) for candidate, tab, replies_failed in rows],
+            {Tab(tab): count for tab, count in counts},
+        )
 
-    async def candidate(self, candidate_id: uuid.UUID) -> tuple[Candidate, Tab, list[Message]] | None:
-        """One candidate for the recruiter, with the whole chat."""
+    async def candidate(self, candidate_id: uuid.UUID) -> tuple[Candidate, Tab, bool, list[Message]] | None:
+        """One candidate for the recruiter, with whether our replies keep failing, and the whole chat."""
         async with self.sessionmaker() as session:
-            row = (await session.execute(select(Candidate, TAB).where(Candidate.id == candidate_id))).tuples().first()
+            found = select(Candidate, TAB, REPLIES_FAILED).where(Candidate.id == candidate_id)
+            row = (await session.execute(found)).tuples().first()
             if row is None:
                 return None
             messages = await session.scalars(
                 select(Message).where(Message.candidate_id == candidate_id).order_by(Message.id)
             )
-            return row[0], Tab(row[1]), list(messages)
+            candidate, tab, replies_failed = row
+            return candidate, Tab(tab), replies_failed, list(messages)
+
+    async def metrics(self) -> Metrics:
+        """The recruiter page's metrics, from the candidates as they stand. A screening counts as finished once it has
+        a rules' outcome, which it keeps if the candidate withdraws afterwards."""
+        finished = Candidate.outcome.is_not(None)
+        # A rules' outcome of qualified or not qualified that a recruiter has decided on. Most not-qualified ones sit
+        # in Closed unopened: counting them would make overrides look rarer than they are.
+        checked = and_(
+            Candidate.outcome.in_([Outcome.QUALIFIED, Outcome.NOT_QUALIFIED]), Candidate.decided_outcome.is_not(None)
+        )
+        totals = select(
+            func.count(),
+            func.count(Candidate.first_reply_at),
+            func.count().filter(finished),
+            func.count().filter(Candidate.outcome == Outcome.NEEDS_HUMAN_REVIEW),
+            func.count().filter(checked),
+            # Against the rules' outcome as it stands. After a decision it can only move to review (a changed knockout
+            # answer, a request for a person), so a later change can hide an override but never make one up.
+            func.count().filter(checked, Candidate.decided_outcome != Candidate.outcome),
+            func.percentile_cont(0.5).within_group(Candidate.completed_at - Candidate.created_at).filter(finished),
+        ).select_from(Candidate)
+        abandoned = select(Candidate.state, Candidate.first_reply_at).where(Candidate.status == Status.ABANDONED)
+        async with self.sessionmaker() as session:
+            applied, replied, outcomes, reviews, checked_outcomes, overrides, median = (
+                (await session.execute(totals)).tuples().one()
+            )
+            stopped = (await session.execute(abandoned)).tuples().all()
+        drop_off: Counter[DropOffStage] = Counter(
+            # Where the reminders stopped: the next field to ask, or the recap.
+            next(iter(ScreeningState.model_validate(state).still_to_ask), "recap") if replied_at else "not_started"
+            for state, replied_at in stopped
+        )
+        return Metrics(
+            applied=applied,
+            response_rate=replied / applied if applied else None,
+            completion_rate=outcomes / replied if replied else None,
+            drop_off=drop_off,
+            review_rate=reviews / outcomes if outcomes else None,
+            overrides=overrides,
+            override_rate=overrides / checked_outcomes if checked_outcomes else None,
+            median_seconds_to_outcome=round(median.total_seconds()) if median else None,
+        )
 
     async def decide(
         self, candidate_id: uuid.UUID, outcome: Outcome, note: str | None, decided_by: str
@@ -277,9 +372,96 @@ class ScreeningService:
     async def resume(self) -> None:
         """At startup: answer what was still pending when the last process stopped (or a turn failed)."""
         async with self.sessionmaker() as session:
-            pending = select(Message.candidate_id).where(Message.author == Author.CANDIDATE, Message.turn_id.is_(None))
-            for candidate_id in await session.scalars(pending.distinct()):
+            for candidate_id in await session.scalars(select(Message.candidate_id).where(PENDING).distinct()):
                 self.ensure_worker(candidate_id)
+
+    async def tick(self, now: datetime) -> Tick:
+        """The clock's work, every TICK_SECONDS: *abandoned* after the last reminder, reminders to silent candidates,
+        the timed retry of messages a failed turn left pending, and the summaries a restart lost. `now` is the
+        caller's, so tests move the clock. While another instance ticks, this one skips."""
+        done = Tick()
+        timings = self.config.timings
+        reminders = {
+            Status.INVITED: ("reminder_not_started", timings.reminders_not_started),
+            Status.IN_PROGRESS: ("reminder_in_progress", timings.reminders_in_progress),
+        }
+        sent: list[tuple[uuid.UUID, list[Message]]] = []
+        # Its queries run twice a minute and would bury the turns in the traces; what it did is logged below.
+        with logfire.suppress_instrumentation():
+            async with self.sessionmaker() as session, session.begin():
+                if not await session.scalar(select(func.pg_try_advisory_xact_lock(TICK_LOCK))):
+                    return done
+                # Waiting for the candidate, with nothing of theirs left to answer.
+                silent = select(Candidate).where(Candidate.status.in_(list(reminders)), OLDEST_PENDING.is_(None))
+
+                abandoned = silent.where(Candidate.last_outbound_at <= now - timings.abandon_after)
+                for candidate in await session.scalars(abandoned):
+                    state = ScreeningState.model_validate(candidate.state)
+                    state.status = transition(state.status, Status.ABANDONED)
+                    candidate.state = state.model_dump(mode="json")
+                    candidate.status = state.status
+                    done.abandoned.append(candidate.id)
+
+                due = or_(
+                    *(
+                        and_(
+                            Candidate.status == status,
+                            Candidate.reminders_sent == number,
+                            Candidate.last_outbound_at <= now - delay,
+                        )
+                        for status, (_, delays) in reminders.items()
+                        for number, delay in enumerate(delays)
+                    )
+                )
+                # The session flushes before this query, so the candidates just abandoned are left out.
+                for candidate in await session.scalars(silent.where(due)):
+                    location = self.config.locations_by_id[candidate.vacancy_location_id]
+                    if timings.quiet_hours.contain(now.astimezone(location.tz).time()):
+                        # Still due on the next tick, until the quiet hours end.
+                        continue
+                    key, delays = reminders[candidate.status]
+                    state = ScreeningState.model_validate(candidate.state)
+                    locale = Locale.of(state.language, location.country)
+                    # Mid-chat, the reminder picks up where the chat stopped: the next field to ask, or the recap.
+                    stage = next(iter(state.still_to_ask), None)
+                    bubbles = self.config.render(
+                        key,
+                        locale,
+                        first_name=application_of(candidate).first_name,
+                        city=location.city,
+                        stage=self.config.label(locale, f"field_{stage}" if stage else "stage_recap"),
+                    )
+                    sent.append((candidate.id, await store_template(session, candidate.id, key, bubbles)))
+                    silence_began = candidate.last_outbound_at
+                    assert silence_began is not None  # the due condition compares it
+                    # One reminder per tick: a late tick (after a restart, say) skips the ones it missed.
+                    candidate.reminders_sent = sum(silence_began + delay <= now for delay in delays)
+                    done.reminded.append(candidate.id)
+
+                waiting = select(Candidate.id).where(now - RETRY_AFTER >= OLDEST_PENDING, ~REPLIES_FAILED)
+                done.retried = [
+                    candidate_id for candidate_id in await session.scalars(waiting) if candidate_id not in self._workers
+                ]
+                unsummarized = select(Candidate).where(Candidate.status.in_(ENDED), Candidate.summary.is_(None))
+                lost = [
+                    candidate
+                    for candidate in await session.scalars(unsummarized)
+                    # A running worker writes its own summary once it has published the close.
+                    if candidate.id not in self._summarized and candidate.id not in self._workers
+                ]
+
+        # Out of the suppression: the workers and summaries started here inherit this context, and get traced.
+        for candidate_id, messages in sent:
+            await self.channel.publish(candidate_id, [ChatMessage.model_validate(message) for message in messages])
+        for candidate_id in done.retried:
+            self.ensure_worker(candidate_id)
+        for candidate in lost:
+            state = ScreeningState.model_validate(candidate.state)
+            await self._summarize(candidate.id, state, application_of(candidate), now)
+            done.summarized.append(candidate.id)
+        if any(asdict(done).values()):
+            logfire.info("tick", **asdict(done))
+        return done
 
     async def stop(self) -> None:
         # Cancelled turns leave their messages pending; resume() picks them up at the next start. A copy, because
@@ -298,13 +480,7 @@ class ScreeningService:
                 candidate = await session.get_one(Candidate, candidate_id)
                 pending = list(
                     await session.scalars(
-                        select(Message)
-                        .where(
-                            Message.candidate_id == candidate_id,
-                            Message.author == Author.CANDIDATE,
-                            Message.turn_id.is_(None),
-                        )
-                        .order_by(Message.id)
+                        select(Message).where(Message.candidate_id == candidate_id, PENDING).order_by(Message.id)
                     )
                 )
                 stored = list(
@@ -342,48 +518,51 @@ class ScreeningService:
                     # Read from its own column on every turn, so a decision made since the last one counts.
                     decision=candidate.decided_outcome,
                 )
+                async with self.sessionmaker() as session, session.begin():
+                    turn = Turn(
+                        candidate_id=candidate_id,
+                        messages=ModelMessagesTypeAdapter.dump_python(result.messages, mode="json"),
+                        prompt_version=prompt_version(self.config),
+                        models=[m.model_name or "unknown" for m in result.messages if isinstance(m, ModelResponse)],
+                        usage=to_jsonable_python(result.usage),
+                        duration_ms=round((time.perf_counter() - started) * 1000),
+                    )
+                    session.add(turn)
+                    await session.flush()
+                    await session.execute(
+                        update(Message)
+                        .where(Message.id.in_([message.id for message in pending]))
+                        .values(turn_id=turn.id)
+                    )
+                    replies = [
+                        Message(
+                            candidate_id=candidate_id,
+                            author=Author.ASSISTANT,
+                            kind=MessageKind.TEXT,
+                            text=text,
+                            turn_id=turn.id,
+                        )
+                        for text in result.reply
+                    ]
+                    session.add_all(replies)
+                    row = await session.get_one(Candidate, candidate_id)
+                    row.state = result.state.model_dump(mode="json")
+                    row.status = result.state.status
+                    row.outcome = result.state.outcome
+                    if replies:
+                        row.last_outbound_at = now
+                        # A new silence: the reminders start over.
+                        row.reminders_sent = 0
+                    if result.state.status is Status.COMPLETED and candidate.status is not Status.COMPLETED:
+                        row.completed_at = now
             except Exception as error:
                 # Every fallback model failed too, the turn ran out of time (RunTimedOut) or of requests
-                # (UsageLimitExceeded). The messages stay pending: the candidate's next message or a restart retries
-                # them.
+                # (UsageLimitExceeded), or storing it failed. The messages stay pending: the candidate's next message, a
+                # restart or tick() retries them, and the failed turn counts towards tick()'s cap.
                 logfire.exception("turn failed for {candidate_id}", candidate_id=candidate_id)
                 notice = await self._tell_failure(candidate, state, pending, error)
                 await self.channel.publish(candidate_id, [*notice, Typing(active=False)])
                 return
-
-            async with self.sessionmaker() as session, session.begin():
-                turn = Turn(
-                    candidate_id=candidate_id,
-                    messages=ModelMessagesTypeAdapter.dump_python(result.messages, mode="json"),
-                    prompt_version=prompt_version(self.config),
-                    models=[m.model_name or "unknown" for m in result.messages if isinstance(m, ModelResponse)],
-                    usage=to_jsonable_python(result.usage),
-                    duration_ms=round((time.perf_counter() - started) * 1000),
-                )
-                session.add(turn)
-                await session.flush()
-                await session.execute(
-                    update(Message).where(Message.id.in_([message.id for message in pending])).values(turn_id=turn.id)
-                )
-                replies = [
-                    Message(
-                        candidate_id=candidate_id,
-                        author=Author.ASSISTANT,
-                        kind=MessageKind.TEXT,
-                        text=text,
-                        turn_id=turn.id,
-                    )
-                    for text in result.reply
-                ]
-                session.add_all(replies)
-                row = await session.get_one(Candidate, candidate_id)
-                row.state = result.state.model_dump(mode="json")
-                row.status = result.state.status
-                row.outcome = result.state.outcome
-                if replies:
-                    row.last_outbound_at = now
-                if result.state.status is Status.COMPLETED and candidate.status is not Status.COMPLETED:
-                    row.completed_at = now
 
             events: list[ChatEvent] = [ChatMessage.model_validate(reply) for reply in replies]
             if result.state.status is not candidate.status:
@@ -433,6 +612,7 @@ class ScreeningService:
         self, candidate_id: uuid.UUID, state: ScreeningState, application: Application, now: datetime
     ) -> None:
         """The recruiter summary, written once the screening ends. If it fails, the key data still show."""
+        self._summarized.add(candidate_id)
         async with self.sessionmaker() as session:
             rows = await session.scalars(
                 select(Message).where(Message.candidate_id == candidate_id).order_by(Message.id)

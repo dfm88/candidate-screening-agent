@@ -6,6 +6,7 @@ import {
   ApiError,
   type CandidateDetail,
   type CandidateRow,
+  type DropOffStage,
   type FieldMark,
   type FieldName,
   type Outcome,
@@ -49,6 +50,7 @@ const MARK: Record<FieldMark, { symbol: string; title: string; className: string
   review: { symbol: '⚑', title: 'Required and unclear: a review reason', className: 'text-red-700' },
   missing: { symbol: '–', title: 'Not asked yet', className: 'text-stone-400' },
 }
+const STAGE_LABEL: Record<DropOffStage, string> = { not_started: 'Never replied', ...FIELD_LABEL, recap: 'Recap' }
 // The backend's reason codes, as compute_outcome writes them ("code: detail").
 const REASON_LABEL: Record<string, string> = {
   no_license: 'No valid driving license',
@@ -67,6 +69,17 @@ function reasonLabel(reason: string): string {
 
 function formatDate(value: string): string {
   return new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+function percent(rate: number | null): string {
+  return rate === null ? '–' : `${Math.round(rate * 100)}%`
+}
+
+function duration(seconds: number | null): string {
+  if (seconds === null) return '–'
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} h`
+  return `${(seconds / 86400).toFixed(1)} d`
 }
 
 const field = 'mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 focus:border-brand-500 focus:outline-none'
@@ -183,6 +196,7 @@ export function CandidatesPage() {
 
   return (
     <>
+      <MetricsRow />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <nav className="flex flex-wrap gap-1" aria-label="Tabs">
           {TABS.map(({ tab: option, label }) => (
@@ -217,6 +231,40 @@ export function CandidatesPage() {
   )
 }
 
+/** The funnel (do candidates answer, and finish?) and what still takes a recruiter's time, from the database. */
+function MetricsRow() {
+  const metrics = useQuery({ queryKey: ['recruiter-metrics'], queryFn: api.metrics, refetchInterval: 30_000 })
+  if (!metrics.data) return null
+  const data = metrics.data
+  const dropOff = (Object.keys(STAGE_LABEL) as DropOffStage[])
+    .filter((stage) => data.drop_off[stage])
+    .map((stage) => `${STAGE_LABEL[stage]} ${data.drop_off[stage]}`)
+    .join(' · ')
+  const items = [
+    { label: 'Response', value: percent(data.response_rate), title: 'Applicants who replied at least once' },
+    { label: 'Completion', value: percent(data.completion_rate), title: 'Of those who replied, screenings that finished' },
+    { label: 'Drop-off', value: dropOff || '–', title: 'Abandoned candidates, by where they stopped' },
+    { label: 'Sent to review', value: percent(data.review_rate), title: 'Finished screenings the rules sent to a person' },
+    {
+      label: 'Overrides',
+      value: data.override_rate === null ? `${data.overrides}` : `${data.overrides} (${percent(data.override_rate)})`,
+      title: "Decisions that differ from a rules' outcome of qualified or not qualified",
+    },
+    { label: 'Median to outcome', value: duration(data.median_seconds_to_outcome), title: "From applying to the rules' outcome" },
+  ]
+  return (
+    <dl className="mb-4 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm" aria-label="Metrics">
+      {items.map(({ label, value, title }) => (
+        <div key={label} title={title} className="flex gap-1.5">
+          <dt className="text-stone-500">{label}</dt>
+          <dd className="font-semibold text-stone-900">{value}</dd>
+        </div>
+      ))}
+      <div className="text-stone-400">of {data.applied} applications</div>
+    </dl>
+  )
+}
+
 function CandidateTable({ rows, showTab }: { rows: CandidateRow[]; showTab: boolean }) {
   if (rows.length === 0) return <p className="mt-10 text-center text-stone-500">Nobody here yet.</p>
   return (
@@ -244,7 +292,10 @@ function CandidateTable({ rows, showTab }: { rows: CandidateRow[]; showTab: bool
               <td className="px-4 py-2">
                 <OutcomeBadge status={row.status} outcome={row.outcome} decided={row.decided_outcome} />
               </td>
-              <td className="px-4 py-2 text-stone-600">{row.reasons.map(reasonLabel).join(' · ')}</td>
+              <td className="px-4 py-2 text-stone-600">
+                {row.replies_failed && <span className="mr-2 font-medium text-red-700">Our replies are failing</span>}
+                {row.reasons.map(reasonLabel).join(' · ')}
+              </td>
               <td className="px-4 py-2 whitespace-nowrap text-stone-500">{formatDate(row.created_at)}</td>
             </tr>
           ))}
@@ -292,6 +343,12 @@ export function CandidatePage() {
         {detail.phone} · {detail.vacancy.name} ({detail.vacancy.city}) · chat in {detail.language === 'es' ? 'Spanish' : 'English'}
         {' · '}applied {formatDate(detail.created_at)}
       </p>
+      {detail.replies_failed && (
+        <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+          Our replies to this candidate keep failing, so the automatic retry has stopped and their last message is
+          unanswered. It's tried again when they write or the service restarts.
+        </p>
+      )}
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         <div className="space-y-4">

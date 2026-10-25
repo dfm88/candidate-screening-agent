@@ -110,6 +110,12 @@ class QuietHours(BaseModel):
     start: time
     end: time
 
+    def contain(self, moment: time) -> bool:
+        # Quiet hours usually run past midnight (21:00–09:00).
+        if self.start > self.end:
+            return moment >= self.start or moment < self.end
+        return self.start <= moment < self.end
+
 
 class Timings(BaseModel):
     reminders_not_started: list[timedelta]

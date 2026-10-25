@@ -26,7 +26,7 @@ npm run dev                               # http://localhost:5173, proxies /api 
 
 **Git hooks:** `uv run --directory backend pre-commit install` once. Before each commit they run ruff, ty, oxlint, tsc and a check for leftover debugger calls. The tests are run by hand.
 
-**Tests:** `cd backend && uv run pytest`. The API tests run the app against the compose Postgres, in a `screening_test` database they create with the migrations; the LLM is stubbed, so tests never call a model.
+**Tests:** `cd backend && uv run pytest`. The API and service tests run against the compose Postgres, in a `screening_test` database they create with the migrations; the LLM is stubbed, so tests never call a model.
 
 **Configuration is environment-only.** `uv run --env-file .env` loads `backend/.env` into the process environment. The app settings, the Logfire SDK (`LOGFIRE_TOKEN`) and Google auth (`CLOUDSDK_CONFIG`) all read it from there, so there's no second loading mechanism to keep in sync. Logfire and GCP are optional: without a token, traces stay on the console. The frontend has no env file, because anything Vite exposes ends up in the public bundle.
 
@@ -49,7 +49,7 @@ curl -sX POST localhost:8000/api/chat/TOKEN/messages -H 'content-type: applicati
 
 **A chat is one application.** The same person applying twice gets two chats; a WhatsApp channel, where the phone number is the identity, needs a person table separate from applications.
 
-Each conversation has one worker in the API process. It waits for a burst of messages to settle (`CHAT_DEBOUNCE_SECONDS`), answers them in one turn, and stores the turn (the model messages, prompt version, models, usage) before publishing the reply. If every model fails, the candidate gets the "give me a moment" template once and the messages stay pending: the next message or a restart retries them. When the screening ends, the summary agent writes the recruiter's caveats and notes; the key data (every answer, the outcome and its reasons) are built by code from the saved state.
+Each conversation has one worker in the API process. It waits for a burst of messages to settle (`CHAT_DEBOUNCE_SECONDS`), answers them in one turn, and stores the turn (the model messages, prompt version, models, usage) before publishing the reply. If every model fails, the candidate gets the "give me a moment" template once and the messages stay pending: their next message, a restart or the timed retry (see [Timed work](#timed-work-reminders-abandoned-chats-retries)) tries again. When the screening ends, the summary agent writes the recruiter's caveats and notes; the key data (every answer, the outcome and its reasons) are built by code from the saved state.
 
 **The candidate pages** (`frontend/`: React, Vite, Tailwind, React Router, TanStack Query). `/apply` is the public apply form; with `APPLY_ACCESS_CODE` set, the link to share is `/apply?code=…`, which fills the code in. Its confirmation opens the chat, or shows a QR code to continue on a phone. `/chat/TOKEN` is the mobile-first chat: it renders the event stream (and replays what it missed after a reconnect), shows the first message's suggested replies, a typing indicator, and closes the input once the candidate withdraws. `frontend/src/api.ts` mirrors `contract.py`.
 
@@ -65,7 +65,7 @@ To run the production image locally: `docker compose --profile app up --build` (
 
 `/recruiter` sits behind a login page that asks for a name and a shared password (`RECRUITER_PASSWORD`). The login sets a signed, HttpOnly session cookie (Starlette's `SessionMiddleware`, keyed with `SESSION_SECRET`, SameSite=Lax, 14 days, so reviewers can come back over several days). Recruiter writes are POST only, which with SameSite=Lax is the CSRF protection.
 
-- **Tabs:** Ready (qualified), Review (waiting for a person), In progress, Closed (not qualified, withdrawn, abandoned), each with its count. Search by name or phone looks in every tab. A tab lists its latest 200 candidates; search reaches the rest.
+- **Tabs:** Ready (qualified), Review (waiting for a person, or our replies to the candidate keep failing), In progress, Closed (not qualified, withdrawn, abandoned), each with its count. Search by name or phone looks in every tab. A tab lists its latest 200 candidates; search reaches the rest.
 - **A candidate's page:**
   - the key data, built by code from the saved answers, with a ✓, gap or ⚑ per field;
   - the AI summary under it;
@@ -77,6 +77,11 @@ To run the production image locally: `docker compose --profile app up --build` (
   - The candidate is told in the chat with a template (`decision_qualified` / `decision_not_qualified` in the client config). The note stays internal.
   - The decision is final and has its own columns (`decided_outcome`, `decided_by`, `decision_note`, `decided_at`). The worker keeps writing the rules' outcome in `outcome`, so nothing it writes can overwrite a decision, and the page shows both.
   - The chat stays open after a decision, and the template goes into the model's history like every message we send.
+- **Metrics:** one row above the tabs (`GET /api/recruiter/metrics`), computed from the database on each request.
+  - *Response rate* (applicants who replied at least once), *completion rate* (of those, screenings that finished) and *drop-off* (abandoned candidates by where they stopped: before replying, at a field, or at the recap) answer "60% don't pick up".
+  - *Sent to review* (finished screenings the rules sent to a person) and *overrides* show how much still takes a recruiter. An override is a decision that differs from a rules' outcome of qualified or not qualified; deciding a review case isn't one. The override rate is over the outcomes a recruiter decided on: of the ones they checked, how many they overturned. Most not-qualified outcomes are never opened, and counting them would hide disagreement.
+  - *Median time to outcome*, from applying to the rules' outcome.
+- **Interview slots aren't built.** The qualified close says the hiring team will contact the candidate about the next step; booking a call from slots that recruiters publish per location is a next step.
 
 **Limits of the demo's login.**
 - **The name is attribution, not identity:** with one shared password, anyone can type any name. In production, each recruiter signs in through the client's SSO.
@@ -99,11 +104,34 @@ A slow model must not leave a candidate waiting. A live turn has three bounds, a
 - **Fallback:** any model API error, a timed-out request included, goes to the next model in `SCREENING_FALLBACK_MODELS`.
 - **Agent:** a tool call with invalid arguments goes back to the model with the validation error, once per tool (PydanticAI's default); a second invalid call fails the turn.
 
-**What the candidate sees when a turn fails** (every model failed, the turn timed out, or it hit the request limit): the "give me a moment" template, once. Their messages stay pending, and their next message or a restart retries them.
+**What the candidate sees when a turn fails** (every model failed, the turn timed out, it hit the request limit, or storing it failed): the "give me a moment" template, once. Their messages stay pending, and their next message, a restart or the timed retry tries again.
 
 **Spend.** There's no per-conversation budget in code; the request limit only bounds one turn. In production, spend is watched outside the app: a GCP budget alert (see Deployment) and a Logfire alert on model cost.
 
 The summary agent gets the same request deadline. Evals run without the deadlines and without a fallback, so the latency they report is the model's own.
+
+## Timed work: reminders, abandoned chats, retries
+
+The lifespan calls `tick(now)` every 30 s. It takes `pg_try_advisory_xact_lock` first, so when two instances overlap (while Cloud Run rolls out a revision) only one of them ticks.
+
+- **Reminders** go to invited and in-progress candidates who are silent, with nothing of theirs left to answer. They're timed from our last message that waits for an answer: 4 h and 1 day before the first reply, 2 h and 1 day mid-chat (`timings` in the client config).
+  - Mid-chat, the reminder names where the chat stopped: the next field to ask, or the recap.
+  - They're templates, because they fall outside WhatsApp's 24-hour window, and they're stored as turns, so the agent sees them.
+  - None between 21:00 and 09:00 at the vacancy's local time: one that falls due then waits for 09:00.
+  - A late tick (after a restart, say) sends one reminder, not every one it missed.
+- ***Abandoned*** after 3 days of silence. A late reply reopens the chat where it stopped.
+- **The timed retry:** pending messages older than 60 s with no worker on them (left by a failed turn or a stopped process) get a new turn. After 3 failed turns on the same messages it stops, because a turn that always fails (one that hits the request limit, say) would cost a model run every 30 s. The candidate then shows in the recruiter's Review tab as "Our replies are failing", and their next message or a restart tries again.
+- **Summaries a restart lost:** a finished screening without a summary gets one. One that fails is tried again after the next restart, not on every tick.
+
+The tick's queries run under `logfire.suppress_instrumentation()`, since twice a minute they would bury the turns in the traces; a tick that did something logs one line naming the candidates. Tests call `tick(now)` with the time they need, and there's no fast-forward endpoint. To show a reminder in a demo, tick once from a shell with the clock moved on by the hours given at the end (against the database in `.env`; the open chat shows it after a reload). It prints what the tick did:
+
+```bash
+cd backend && uv run --env-file .env python -c "
+import asyncio, sys; from datetime import UTC, datetime, timedelta; from screening.main import create_app
+print(asyncio.run(create_app().state.service.tick(datetime.now(UTC) + timedelta(hours=float(sys.argv[1])))))" 5
+```
+
+Quiet hours are checked at the moved clock, too. From Madrid after 16:00, `5` lands past 21:00, and the tick sends nothing (`reminded=[]`). Pick hours that keep the moved clock between 09:00 and 21:00 at the vacancy's local time: at least 4 before the candidate's first reply, at least 2 mid-chat.
 
 ## Evals
 

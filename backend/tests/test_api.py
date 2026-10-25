@@ -7,20 +7,16 @@ never ends and httpx's in-process transport only returns a response once it has.
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from unittest import mock
 
 import httpx
 import pytest
 import uvicorn
-from alembic import command
-from alembic.config import Config
 from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from screening.agent import screening_agent, summary_agent
@@ -30,7 +26,6 @@ from screening.main import create_app
 
 pytestmark = pytest.mark.anyio
 
-TEST_DATABASE = "screening_test"
 ACCESS_CODE = "demo-code"
 RECRUITER_PASSWORD = "recruiter-pass"
 EVERYTHING = {
@@ -43,30 +38,6 @@ EVERYTHING = {
     "platforms": ["glovo"],
     "start_date": {"kind": "asap"},
 }
-
-
-@pytest.fixture(scope="session")
-def database_url() -> str:
-    """A fresh database, built by the real migrations, so they're tested too."""
-    server = Settings().database_url.rsplit("/", 1)[0]
-
-    async def recreate() -> None:
-        engine = create_async_engine(f"{server}/postgres", isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as connection:
-                await connection.execute(text(f"DROP DATABASE IF EXISTS {TEST_DATABASE} WITH (FORCE)"))
-                await connection.execute(text(f"CREATE DATABASE {TEST_DATABASE}"))
-        finally:
-            await engine.dispose()
-
-    try:
-        asyncio.run(recreate())
-    except OSError:
-        pytest.skip("needs Postgres: docker compose up -d --wait db")
-    url = f"{server}/{TEST_DATABASE}"
-    with mock.patch.dict(os.environ, {"DATABASE_URL": url}):
-        command.upgrade(Config("alembic.ini"), "head")
-    return url
 
 
 def settings_for(database_url: str) -> Settings:
@@ -361,6 +332,8 @@ async def test_a_recruiter_resolves_a_review_case(database_url: str) -> None:
             prompt = request[-1].parts[-1]
             assert isinstance(prompt, UserPromptPart)
             assert "outcome: qualified (the hiring team's decision, final)" in str(prompt.content)
+            # The numbers are tested in test_service.py; other tests' candidates share this database.
+            assert (await client.get("/api/recruiter/metrics")).json()["applied"] >= 1
 
             assert (await client.post("/api/recruiter/logout")).status_code == 204
             assert (await client.get("/api/recruiter/me")).status_code == 401

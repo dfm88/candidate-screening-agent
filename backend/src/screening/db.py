@@ -70,7 +70,11 @@ class Candidate(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     first_reply_at: Mapped[datetime | None]
     last_inbound_at: Mapped[datetime | None]
+    # Our last message that waits for an answer: the first message, a reply or the decision. Reminders don't move it:
+    # the silence they break is timed from it, and so is *abandoned*.
     last_outbound_at: Mapped[datetime | None]
+    # Reminders sent in the current silence; the next reply starts a new one.
+    reminders_sent: Mapped[int] = mapped_column(default=0, server_default="0")
     completed_at: Mapped[datetime | None]
 
 

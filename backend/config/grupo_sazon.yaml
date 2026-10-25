@@ -180,7 +180,7 @@ regional_terms:
   - {ES: media jornada, MX: medio tiempo}
   - {ES: equipo de selección, MX: equipo de reclutamiento}
 
-# Quick-reply labels and the field names used in reminders.
+# Quick-reply labels, and the stages a reminder names: the next field to ask, or the recap.
 labels:
   es-ES:
     start: Empezar
@@ -192,6 +192,7 @@ labels:
     field_schedule: tu horario
     field_experience: tu experiencia
     field_start_date: la fecha de inicio
+    stage_recap: el resumen de tus respuestas
   es-MX:
     start: Empezar
     not_interested: No me interesa
@@ -202,6 +203,7 @@ labels:
     field_schedule: tu horario
     field_experience: tu experiencia
     field_start_date: la fecha de inicio
+    stage_recap: el resumen de tus respuestas
   en:
     start: Start
     not_interested: Not interested
@@ -212,6 +214,7 @@ labels:
     field_schedule: your schedule
     field_experience: your experience
     field_start_date: your start date
+    stage_recap: the recap of your answers
 
 # Fixed messages, only where the channel requires them: the first message, the reminders and the recruiter's decision
 # (which can come days later) fall outside WhatsApp's 24-hour window, and the failure notice is sent when the model
