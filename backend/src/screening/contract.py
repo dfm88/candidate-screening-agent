@@ -6,7 +6,9 @@ frontend/src/api.ts mirror this file.
     GET  /api/chat/{token}               → ChatSession · 404 unknown token
     POST /api/chat/{token}/messages      CandidateMessage → 202 MessageAccepted · 409 chat closed
     GET  /api/chat/{token}/events        SSE: `message` ChatMessage (id = message id, replayed after Last-Event-ID),
-                                              `typing` Typing, `status` ChatStatus
+                                              `typing` Typing, `status` ChatStatus, `corrected` Corrected
+    POST /api/voice/chat/{token}/session → VoiceSession · 404 voice not set up · 409 chat closed
+    WS   /api/voice/ws                       ElevenLabs Speech Engine connects here for each call (voice.py)
 
 The recruiter tool. Every route but the login needs the session cookie the login sets (401 without it; 503 when
 RECRUITER_PASSWORD isn't set). Writes are POST only: with the cookie's SameSite=Lax, that's the CSRF protection.
@@ -77,6 +79,8 @@ class ChatSession(BaseModel):
     first_name: str
     language: Language
     status: Status
+    # A live voice call is set up for the chat's current language.
+    voice: bool
 
 
 class CandidateMessage(BaseModel):
@@ -95,6 +99,13 @@ class Author(StrEnum):
     ASSISTANT = "assistant"
 
 
+class MessageKind(StrEnum):
+    TEXT = "text"
+    TEMPLATE = "template"
+    # Said in a live voice call: the candidate's words as transcribed, ours as the candidate heard them.
+    VOICE = "voice"
+
+
 class ChatMessage(BaseModel):
     """One chat bubble. Candidate messages are echoed too, so every open tab shows them."""
 
@@ -102,7 +113,10 @@ class ChatMessage(BaseModel):
 
     id: int
     author: Author
+    kind: MessageKind
     text: str
+    # Our reply in a call, cut off: the text is the part the candidate heard.
+    interrupted: bool = False
     # Suggested replies under this bubble; tapping one sends its text. Free text always works.
     quick_replies: list[str] = []
     client_id: str | None = None
@@ -117,7 +131,25 @@ class ChatStatus(BaseModel):
     status: Status
 
 
-ChatEvent = ChatMessage | Typing | ChatStatus
+class Corrected(BaseModel):
+    """A message from a call, corrected once we know what was heard: our reply cut to the part played (`text`, and
+    `interrupted`), our reply removed when none of it was played (`text` null), or the candidate's words transcribed
+    again."""
+
+    id: int
+    text: str | None
+    interrupted: bool = False
+
+
+ChatEvent = ChatMessage | Typing | ChatStatus | Corrected
+
+
+class VoiceSession(BaseModel):
+    """What the browser needs to start a call: the WebRTC token for ElevenLabs, and a single-use ticket that it
+    passes to ElevenLabs, which hands it back to us, so the chat token never leaves us."""
+
+    conversation_token: str
+    ticket: str
 
 
 # --- Recruiter tool ----------------------------------------------------------------------------------------------

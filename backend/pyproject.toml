@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.20",
     "asyncpg>=0.32",
+    "elevenlabs>=2.74.1",
     "fastapi>=0.162",
     # Signs the recruiter's session cookie: Starlette's SessionMiddleware imports it, and FastAPI doesn't install it.
     "itsdangerous>=2.2",

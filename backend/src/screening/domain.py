@@ -111,7 +111,14 @@ class StartDateSpec(BaseModel):
     calendar_date: date | None = Field(default=None, description="For kind=date.")
     amount: int | None = Field(default=None, ge=0, description="For kind=in.")
     unit: Literal["days", "weeks", "months"] | None = Field(default=None, description="For kind=in.")
-    weekday: int | None = Field(default=None, ge=0, le=6, description="For kind=weekday: 0=Monday … 6=Sunday.")
+    weekday: int | None = Field(
+        default=None,
+        ge=0,
+        le=6,
+        description="For kind=weekday: 0=Monday … 6=Sunday, the next such day from today, never today. When the "
+        "candidate rules the next one out ('next Monday, not tomorrow', said on a Sunday), use kind=date with the "
+        "calendar date instead.",
+    )
 
 
 class NewAnswers(BaseModel):

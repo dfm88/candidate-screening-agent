@@ -148,6 +148,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "elevenlabs" },
     { name = "fastapi" },
     { name = "itsdangerous" },
     { name = "logfire", extra = ["fastapi", "sqlalchemy"] },
@@ -175,8 +176,9 @@ evals = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.20" },
     { name = "asyncpg", specifier = ">=0.32" },
+    { name = "elevenlabs", specifier = ">=2.74.1" },
     { name = "fastapi", specifier = ">=0.162" },
-    { name = "itsdangerous", specifier = ">=2.2.0" },
+    { name = "itsdangerous", specifier = ">=2.2" },
     { name = "logfire", extras = ["fastapi", "sqlalchemy"], specifier = ">=5.3" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "google", "logfire", "openai"], specifier = ">=2.61,<3" },
     { name = "pydantic-settings", specifier = ">=2.16" },
@@ -517,6 +519,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "elevenlabs"
+version = "2.74.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/03/b53b9d46dc6e682aa5595059d8035193405715613ad38eed69a1e609e047/elevenlabs-2.74.1.tar.gz", hash = "sha256:7f7159e8c079b753363b387b4e6a8c0d3b413df2adb435eec3befd4ea8f48e1f", size = 884448, upload-time = "2026-10-20T13:25:28.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/3b/100069b49ee9ae7eea63c57e97beb84143dcb607645e0357688ffe1674e2/elevenlabs-2.74.1-py3-none-any.whl", hash = "sha256:e94380ea301cb2324ec6daf05f0cf567ac9831454ca3f1fa7cfdb62d48705d27", size = 2320472, upload-time = "2026-10-20T13:25:26.301Z" },
 ]
 
 [[package]]

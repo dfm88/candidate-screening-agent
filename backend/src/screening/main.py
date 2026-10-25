@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import logfire
+from elevenlabs import AsyncElevenLabs
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from screening import api, db
+from screening import api, db, voice
 from screening.agent import build_model
 from screening.channels import WebChatChannel
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Settings, load_client_config
@@ -62,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.service = service
     app.state.web_chat = web_chat
+    app.state.elevenlabs = AsyncElevenLabs(api_key=settings.elevenlabs_api_key) if settings.elevenlabs_api_key else None
     # Checked here, not in Settings: the evals and the CLI never use the recruiter tool, and a Settings validation
     # error would print the input values, secrets included.
     if settings.recruiter_password and not settings.session_secret:
@@ -74,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     app.include_router(api.router)
     app.include_router(api.recruiter_router)
+    app.include_router(voice.router)
     logfire.instrument_fastapi(app, excluded_urls="/api/health")
 
     if settings.static_dir:

@@ -12,6 +12,16 @@ SERVICE_NAME = "candidate-screening-agent"
 DEFAULT_CLIENT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "grupo_sazon.yaml"
 
 
+class Country(StrEnum):
+    ES = "ES"
+    MX = "MX"
+
+
+class Language(StrEnum):
+    ES = "es"
+    EN = "en"
+
+
 class Settings(BaseSettings):
     # Values come from the process environment only (`uv run --env-file .env`, Cloud Run, compose). Reading
     # .env here too would hide it from the Logfire SDK and Google auth, which only read the environment.
@@ -54,16 +64,15 @@ class Settings(BaseSettings):
     session_secret: str | None = None
     # The cookie's Secure flag. Off only for local http, where httpx (the tests) and some browsers wouldn't send it.
     session_https_only: bool = True
-
-
-class Country(StrEnum):
-    ES = "ES"
-    MX = "MX"
-
-
-class Language(StrEnum):
-    ES = "es"
-    EN = "en"
+    # Live voice calls through ElevenLabs Speech Engine (voice.py). Without the key, the chat has no call button.
+    elevenlabs_api_key: str | None = None
+    # The Speech Engine of each language, as `python -m screening.voice` prints them (a JSON object in the env). A
+    # language without one has no calls.
+    speech_engines: dict[Language, str] = {}
+    # The ElevenLabs SDK's log of each call (`SpeechEngineSession(debug=…)`), printed to stdout: event ids, transcript
+    # lengths, ElevenLabs' conversation id, and the replies sent whole (an empty one, the failure line, our last line
+    # said again). Not the transcripts. Our per-turn log line carries the conversation id, to join the two.
+    voice_debug: bool = False
 
 
 class Locale(StrEnum):
@@ -142,6 +151,8 @@ class ClientConfig(BaseModel):
     regional_terms: list[dict[Country, str]]
     labels: dict[Locale, dict[str, str]]
     templates: dict[str, dict[Locale, list[str]]]
+    # The ElevenLabs voice that reads our replies in a call, per language.
+    voices: dict[Language, str]
 
     @model_validator(mode="after")
     def _complete_locales(self) -> "ClientConfig":

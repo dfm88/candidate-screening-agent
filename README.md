@@ -133,6 +133,56 @@ print(asyncio.run(create_app().state.service.tick(datetime.now(UTC) + timedelta(
 
 Quiet hours are checked at the moved clock, too. From Madrid after 16:00, `5` lands past 21:00, and the tick sends nothing (`reminded=[]`). Pick hours that keep the moved clock between 09:00 and 21:00 at the vacancy's local time: at least 4 before the candidate's first reply, at least 2 mid-chat.
 
+## Live voice calls
+
+The chat has a call button: the candidate can do the screening by voice, with the same agent, tools and state. It shows when `ELEVENLABS_API_KEY` is set and the chat's language has an engine (`SPEECH_ENGINES`).
+
+**Demo only: ElevenLabs processes the audio in the US** (its API answers with `x-region: us-central1`). Like the direct model APIs, that's acceptable for the demo's synthetic data, not for real candidates. The engines don't record audio (`record_voice=False`), keep calls for 1 day (the shortest retention ElevenLabs takes), and we delete each call there once we've stored what was heard.
+
+### How a call works
+
+- **ElevenLabs Speech Engine** runs speech-to-text, turn-taking, interruptions and speech. For each turn of the candidate's, it sends the call's transcript to our WebSocket (`/api/voice/ws`), and our reply streams back to be spoken as it's written.
+- **The browser** gets a WebRTC token from `/api/voice/chat/{token}/session`, plus a single-use ticket that ElevenLabs hands back to us, so the chat token never leaves us. ElevenLabs proves it's ElevenLabs with a JWT signed with our API key.
+- **The instructions.** A voice turn reads the text chat's instructions, then `prompts/spoken.md` (speech recognition in, everything spoken out) and `prompts/live_call.md` (the acknowledgement before a tool call, cut lines). A text turn reads exactly what the evals validated. The context block says `channel: voice`.
+- **The engines are code:** `python -m screening.voice wss://HOST/api/voice/ws` creates or updates one per language, with speech-recognition keywords (the places in our service areas and the delivery platforms), the voice, the language, ElevenLabs' number normaliser, no recording, and 1-day retention.
+- **The chat shows the call** (🎙️ on its lines). A call's turn and a chat turn take the conversation's lock, so they never overlap.
+
+### The record is what the candidate heard
+
+An answer is only ever read against a question the candidate heard. ElevenLabs' transcript cuts our lines to what was played, so the model reads the call from it, and the stored record follows it. This is the common practice in voice agents: Pipecat and LiveKit cut the assistant's message to the words spoken, and the OpenAI Realtime API has `conversation.item.truncate` for the same reason.
+
+- **A turn cut off** (the candidate spoke again, or hung up) is discarded whole, like a failed text turn. The next turn reads the same words from the transcript, and the context block shows that nothing was saved. So nothing half-heard becomes a saved answer, and the next turn starts at once.
+- **A stored turn whose reply was cut while it played** is corrected to the part heard, in the chat and in the model's history. If none of it was played, it's removed.
+- **When the call ends,** whatever the candidate said that no turn answered gets a normal text turn, whose reply lands in the chat. Then the record is checked against ElevenLabs' history of the call, and the call is deleted there.
+- **ElevenLabs sends the same words again at times,** punctuated anew, or an older transcript after a newer one. These run no turn.
+
+### Latency
+
+Measured with `evals.voice_driver`: a simulated candidate speaks through ElevenLabs TTS over the call's WebSocket, in real time. Local, terra, two Spanish screenings, 19 turns. The time is from the end of the candidate's speech to our first audio:
+
+| Turns | Median | Max |
+|---|---|---|
+| All (19) | 2.50 s | 5.07 s * |
+| With a tool call (9) | 2.80 s | 5.07 s * |
+| Without (4) | 1.84 s | 2.11 s |
+| After the candidate paused mid-answer (6) | 2.24 s | 3.22 s |
+
+\* ElevenLabs sent the transcript again 1.7 s late, with a word added; our share of that turn was 0.96 s.
+
+Where the time goes, at the median: ElevenLabs' speech recognition and turn detection take about 0.4 s, our first text comes 0.9 s later, and speech starts about 0.3 s after that. A tool turn waits about another 1.45 s, because its acknowledgement is held (below). Before the refactor that discards cut turns, 20 turns gave the same picture: a 2.71 s median, with nothing over 4 s.
+
+**Why the acknowledgement doesn't start the speech sooner here.**
+- **What it is.** On a turn that calls a tool, the model writes a short acknowledgement before the tool call: "Entendido, fines de semana." ("Got it, weekends."). This is the common practice for voice agents. With a TTS that can flush, it would start the speech about a second earlier, while the tool runs and a second request writes the rest.
+- **Why it's held.** ElevenLabs' TTS starts generating once enough text is buffered, or on a flush. The TTS WebSocket's default `chunk_length_schedule` starts at 120 characters. Speech Engine's `agent_response` (content and `is_final`) exposes neither the schedule nor a flush. Measured: acknowledgements of up to 53 characters waited for the rest of the reply, and those of 57 or more played at once. A prompt that asked for a whole-sentence read-back got 2 of 6 that long, and tool turns didn't get faster (median 2.71 s against 2.80 s), so it wasn't kept.
+- **The floor.** So the acknowledgement is spoken together with the rest, and a tool turn's two model requests set the floor. terra is the fastest model that passed the license gate: request p50 1.3 s, against 2.0 s for Gemini 3.8 Flash on the Gemini API.
+- **Accepted for the demo:** a median under 3 s, and nothing over 4 s on our side.
+
+### Limits
+
+- **A voice turn that fails** (every model down, or out of time) says the chat's "Dame un momento, por favor." ("Give me a moment, please."). The candidate's next words get a turn that answers both.
+- **Typing in the chat during a call** works, but the turns take turns.
+- **Tickets and locks live in memory,** which fits the deployment's single instance.
+
 ## Evals
 
 The process design is enforced by evals, not unit tests. `backend/evals/` (Pydantic Evals) runs synthetic candidates from `cases.yaml`, in both countries and in Spanish and English, against the real agent. A simulated candidate (an LLM playing the persona) chats with the agent in memory until the conversation ends, and labels what each agent message asked for; then the summary agent writes the recruiter summary. Then:
@@ -201,7 +251,9 @@ cp deploy.env.example deploy.env   # set GCP_PROJECT (and CLOUDSDK_CONFIG if you
 
 The demo deployment logs full LLM prompts and completions to Logfire (`LLM_CONTENT_LOGGING=true`), so every turn of a test chat can be read in the traces. People trying the demo might still type real details, so the apply page asks for made-up data. For a real client it stays off unless there's a DPA and a legal basis.
 
-Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD` and `LOGFIRE_TOKEN` are optional, and `SESSION_SECRET` is generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`).
+The demo also logs the ElevenLabs SDK's call events to Cloud Logging (`VOICE_DEBUG=true`): event ids, transcript lengths, ElevenLabs' conversation id and the replies we send whole, not the transcripts. Our per-turn line in Logfire (`voice turn at …`) carries the same conversation id, so a call that ElevenLabs ended on its side can be followed in both.
+
+Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD`, `LOGFIRE_TOKEN` and `ELEVENLABS_API_KEY` (voice calls) are optional, and `SESSION_SECRET` is generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`). Voice calls also need the demo's own engines: `ENVIRONMENT=demo uv run --env-file .env python -m screening.voice wss://SERVICE_URL/api/voice/ws` prints the `SPEECH_ENGINES` value for `deploy.env`.
 
 The service runs as exactly one always-on instance (`--min-instances 1 --max-instances 1 --no-cpu-throttling`), because the reminder loop, the SSE streams and the per-conversation locks live in that process.
 

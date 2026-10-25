@@ -13,17 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from screening.config import Language
-from screening.contract import Author
+from screening.contract import Author, MessageKind
 from screening.domain import Outcome, Status
 
 
 class Source(enum.StrEnum):
     APPLY_FORM = "apply_form"
-
-
-class MessageKind(enum.StrEnum):
-    TEXT = "text"
-    TEMPLATE = "template"
 
 
 class Base(DeclarativeBase):
@@ -110,6 +105,8 @@ class Message(Base):
     kind: Mapped[MessageKind]
     template_key: Mapped[str | None]
     text: Mapped[str]
+    # Our reply in a call, cut off: `text` is the part the candidate heard.
+    interrupted: Mapped[bool] = mapped_column(default=False, server_default="false")
     quick_replies: Mapped[list[str]] = mapped_column(default=list)
     client_id: Mapped[str | None]
     turn_id: Mapped[int | None] = mapped_column(ForeignKey("turns.id", ondelete="SET NULL"))

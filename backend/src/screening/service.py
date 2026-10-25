@@ -2,11 +2,13 @@
 turns, and the clock's work (tick). The database lives at this edge; domain.py and agent.py stay pure."""
 
 import asyncio
+import dataclasses
 import secrets
 import time
 import uuid
-from collections import Counter
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -21,11 +23,30 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from screening.agent import history_from_turns, prompt_version, run_turn, write_summary
+from screening.agent import (
+    TurnResult,
+    call_history,
+    history_from_turns,
+    prompt_version,
+    run_turn,
+    stream_turn,
+    write_summary,
+)
 from screening.channels import Channel
 from screening.config import ClientConfig, Language, Locale, Settings
-from screening.contract import Author, ChatEvent, ChatMessage, ChatStatus, DropOffStage, Metrics, Tab, Typing
-from screening.db import Candidate, Message, MessageKind, Source, Turn
+from screening.contract import (
+    Author,
+    ChatEvent,
+    ChatMessage,
+    ChatStatus,
+    Corrected,
+    DropOffStage,
+    MessageKind,
+    Metrics,
+    Tab,
+    Typing,
+)
+from screening.db import Candidate, Message, Source, Turn
 from screening.domain import Application, Outcome, ScreeningState, Status, transition
 
 ENDED = frozenset({Status.COMPLETED, Status.WITHDRAWN})
@@ -108,6 +129,33 @@ async def store_template(
 
 
 @dataclass
+class VoiceTurn:
+    """A turn of a call, once stored."""
+
+    turn_id: int
+    # Model requests the turn made, for the call's latency log.
+    requests: int
+
+
+@dataclass
+class StoredLine:
+    """A line of a call as stored. Its client id ends with its position in the call's transcript."""
+
+    message_id: int
+    author: Author
+    text: str
+
+
+@dataclass
+class Correction:
+    """A stored line of a call, against what the candidate heard: our line cut to the part played, or `heard=None`
+    when none of it was; or the candidate's words, transcribed again."""
+
+    message_id: int
+    heard: str | None
+
+
+@dataclass
 class Tick:
     """What one tick did, by candidate."""
 
@@ -134,6 +182,10 @@ class ScreeningService:
         self._workers: dict[uuid.UUID, asyncio.Task[None]] = {}
         # Conversations that got a message after their worker last looked: it looks again before it stops.
         self._kicked: set[uuid.UUID] = set()
+        # A conversation's turns never overlap: the text worker and a voice call both take its lock.
+        self._locks: defaultdict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Summaries written in the background, held so they aren't garbage-collected while they run.
+        self._background: set[asyncio.Task[None]] = set()
         # Screenings this process has tried to summarize. tick() writes the summaries a restart lost; one that failed
         # here is tried again after the next restart, not every tick.
         self._summarized: set[uuid.UUID] = set()
@@ -476,100 +528,331 @@ class ScreeningService:
         while True:
             self._kicked.discard(candidate_id)
             await asyncio.sleep(self.settings.chat_debounce_seconds)
+            async with self._locks[candidate_id]:
+                async with self.sessionmaker() as session:
+                    candidate = await session.get_one(Candidate, candidate_id)
+                    pending = list(
+                        await session.scalars(
+                            select(Message).where(Message.candidate_id == candidate_id, PENDING).order_by(Message.id)
+                        )
+                    )
+                    stored = list(
+                        await session.scalars(
+                            select(Turn.messages).where(Turn.candidate_id == candidate_id).order_by(Turn.id)
+                        )
+                    )
+                if not pending:
+                    # A message stored while we were looking has kicked us: look again rather than leave it
+                    # unanswered.
+                    if candidate_id in self._kicked:
+                        continue
+                    return
+
+                await self.channel.publish(candidate_id, [Typing(active=True)])
+                state = ScreeningState.model_validate(candidate.state)
+                now = datetime.now(UTC)
+                started = time.perf_counter()
+                try:
+                    result = await run_turn(
+                        state=state,
+                        application=application_of(candidate),
+                        config=self.config,
+                        candidate_messages=[message.text for message in pending],
+                        history=history_from_turns(
+                            [ModelMessagesTypeAdapter.validate_python(messages) for messages in stored],
+                            self.settings.max_history_messages,
+                        ),
+                        model=self.model,
+                        now=now,
+                        conversation_id=str(candidate_id),
+                        model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
+                        turn_timeout=self.settings.turn_timeout,
+                        usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
+                        # Read from its own column on every turn, so a decision made since the last one counts.
+                        decision=candidate.decided_outcome,
+                    )
+                    async with self.sessionmaker() as session, session.begin():
+                        turn = await self._record_turn(session, candidate, result, now, started)
+                        await session.execute(
+                            update(Message)
+                            .where(Message.id.in_([message.id for message in pending]))
+                            .values(turn_id=turn.id)
+                        )
+                        replies = [
+                            Message(
+                                candidate_id=candidate_id,
+                                author=Author.ASSISTANT,
+                                kind=MessageKind.TEXT,
+                                text=text,
+                                turn_id=turn.id,
+                            )
+                            for text in result.reply
+                        ]
+                        session.add_all(replies)
+                except Exception as error:
+                    # Every fallback model failed too, the turn ran out of time (RunTimedOut) or of requests
+                    # (UsageLimitExceeded), or storing it failed. The messages stay pending: the candidate's next
+                    # message, a restart or tick() retries them, and the failed turn counts towards tick()'s cap.
+                    logfire.exception("turn failed for {candidate_id}", candidate_id=candidate_id)
+                    notice = await self._tell_failure(candidate, state, pending, error)
+                    await self.channel.publish(candidate_id, [*notice, Typing(active=False)])
+                    return
+
+                events: list[ChatEvent] = [ChatMessage.model_validate(reply) for reply in replies]
+                if result.state.status is not candidate.status:
+                    events.append(ChatStatus(status=result.state.status))
+                await self.channel.publish(candidate_id, [*events, Typing(active=False)])
+            # Outside the lock: a call can go on while the summary is written.
+            if result.state.status in ENDED and candidate.status not in ENDED:
+                await self._summarize(candidate_id, result.state, application_of(candidate), now)
+
+    async def voice_turn(
+        self,
+        candidate_id: uuid.UUID,
+        *,
+        call_id: str,
+        history_until: int,
+        call: Sequence[tuple[str, str]],
+        said: list[str],
+        new_lines: dict[int, tuple[str, str]],
+    ) -> AsyncGenerator[str | VoiceTurn]:
+        """One turn of a live call (voice.py): its text as it's written, then the turn as stored. Under the
+        conversation's lock like a text turn, so the two never overlap. The model reads the turns stored up to
+        `history_until` (before the call), then the call so far from ElevenLabs' transcript (`call`: our lines cut to
+        what was played), then what the candidate just `said`; the state comes from the database, as always.
+
+        Once the run has its result, the turn is stored with the call's lines that no stored turn holds yet
+        (`new_lines`, by their position in the transcript: the candidate's words, and what was heard of turns cut
+        off), and the reply after them. Closed before then, by a newer transcript or the end of the call, it stores
+        nothing, like a failed text turn: whatever it would have saved is still in the transcript the next turn reads,
+        and the context block says it isn't saved."""
+        async with self._locks[candidate_id]:
             async with self.sessionmaker() as session:
                 candidate = await session.get_one(Candidate, candidate_id)
-                pending = list(
-                    await session.scalars(
-                        select(Message).where(Message.candidate_id == candidate_id, PENDING).order_by(Message.id)
-                    )
-                )
                 stored = list(
                     await session.scalars(
-                        select(Turn.messages).where(Turn.candidate_id == candidate_id).order_by(Turn.id)
+                        select(Turn.messages)
+                        .where(Turn.candidate_id == candidate_id, Turn.id <= history_until)
+                        .order_by(Turn.id)
                     )
                 )
-            if not pending:
-                # A message stored while we were looking has kicked us: look again rather than leave it unanswered.
-                if candidate_id in self._kicked:
-                    continue
-                return
-
             await self.channel.publish(candidate_id, [Typing(active=True)])
-            state = ScreeningState.model_validate(candidate.state)
-            application = application_of(candidate)
             now = datetime.now(UTC)
             started = time.perf_counter()
+            result: TurnResult | None = None
             try:
-                result = await run_turn(
-                    state=state,
-                    application=application,
-                    config=self.config,
-                    candidate_messages=[message.text for message in pending],
-                    history=history_from_turns(
-                        [ModelMessagesTypeAdapter.validate_python(messages) for messages in stored],
-                        self.settings.max_history_messages,
-                    ),
-                    model=self.model,
-                    now=now,
-                    conversation_id=str(candidate_id),
-                    model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
-                    turn_timeout=self.settings.turn_timeout,
-                    usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
-                    # Read from its own column on every turn, so a decision made since the last one counts.
-                    decision=candidate.decided_outcome,
-                )
-                async with self.sessionmaker() as session, session.begin():
-                    turn = Turn(
-                        candidate_id=candidate_id,
-                        messages=ModelMessagesTypeAdapter.dump_python(result.messages, mode="json"),
-                        prompt_version=prompt_version(self.config),
-                        models=[m.model_name or "unknown" for m in result.messages if isinstance(m, ModelResponse)],
-                        usage=to_jsonable_python(result.usage),
-                        duration_ms=round((time.perf_counter() - started) * 1000),
-                    )
-                    session.add(turn)
-                    await session.flush()
-                    await session.execute(
-                        update(Message)
-                        .where(Message.id.in_([message.id for message in pending]))
-                        .values(turn_id=turn.id)
-                    )
-                    replies = [
-                        Message(
-                            candidate_id=candidate_id,
-                            author=Author.ASSISTANT,
-                            kind=MessageKind.TEXT,
-                            text=text,
-                            turn_id=turn.id,
+                # Closed here, in the call's task, however the call stops reading it, so its run is cancelled at
+                # once and never outlives the lock.
+                async with aclosing(
+                    stream_turn(
+                        state=ScreeningState.model_validate(candidate.state),
+                        application=application_of(candidate),
+                        config=self.config,
+                        candidate_messages=said,
+                        history=history_from_turns(
+                            [ModelMessagesTypeAdapter.validate_python(messages) for messages in stored],
+                            self.settings.max_history_messages,
                         )
-                        for text in result.reply
-                    ]
-                    session.add_all(replies)
-                    row = await session.get_one(Candidate, candidate_id)
-                    row.state = result.state.model_dump(mode="json")
-                    row.status = result.state.status
-                    row.outcome = result.state.outcome
-                    if replies:
-                        row.last_outbound_at = now
-                        # A new silence: the reminders start over.
-                        row.reminders_sent = 0
-                    if result.state.status is Status.COMPLETED and candidate.status is not Status.COMPLETED:
-                        row.completed_at = now
+                        + call_history(call),
+                        model=self.model,
+                        now=now,
+                        conversation_id=str(candidate_id),
+                        model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
+                        turn_timeout=self.settings.turn_timeout,
+                        usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
+                        decision=candidate.decided_outcome,
+                    )
+                ) as stream:
+                    async for item in stream:
+                        if isinstance(item, TurnResult):
+                            result = item
+                        else:
+                            yield item
             except Exception as error:
-                # Every fallback model failed too, the turn ran out of time (RunTimedOut) or of requests
-                # (UsageLimitExceeded), or storing it failed. The messages stay pending: the candidate's next message, a
-                # restart or tick() retries them, and the failed turn counts towards tick()'s cap.
-                logfire.exception("turn failed for {candidate_id}", candidate_id=candidate_id)
-                notice = await self._tell_failure(candidate, state, pending, error)
-                await self.channel.publish(candidate_id, [*notice, Typing(active=False)])
+                # Every fallback model failed too, or the turn ran out of time or requests. Only the failure is
+                # stored, as in the chat, and the call says the chat's "give me a moment" rather than go quiet. The
+                # turn on the candidate's next words answers these too, since ElevenLabs' transcript still holds them,
+                # and stores the line as heard.
+                logfire.exception("voice turn failed for {candidate_id}", candidate_id=candidate_id)
+                async with self.sessionmaker() as session, session.begin():
+                    session.add(
+                        Turn(
+                            candidate_id=candidate_id,
+                            messages=[],
+                            prompt_version=prompt_version(self.config),
+                            error=repr(error),
+                        )
+                    )
+                state = ScreeningState.model_validate(candidate.state)
+                location = self.config.locations_by_id[candidate.vacancy_location_id]
+                yield " ".join(self.config.render("failure", Locale.of(state.language, location.country)))
                 return
+            finally:
+                if result is None:
+                    await self.channel.publish(candidate_id, [Typing(active=False)])
+            assert result is not None
 
-            events: list[ChatEvent] = [ChatMessage.model_validate(reply) for reply in replies]
+            async with self.sessionmaker() as session, session.begin():
+                if earlier := [new_lines[position] for position in sorted(new_lines) if position < len(call)]:
+                    # What the model read of the call that no stored turn holds (the candidate's words, what was heard
+                    # of turns cut off): a turn of its own, like a template's, so the history after the call is the
+                    # call as the model read it, and a correction of this turn's reply leaves it alone.
+                    history = ModelMessagesTypeAdapter.dump_python(call_history(earlier), mode="json")
+                    session.add(Turn(candidate_id=candidate_id, messages=history))
+                    await session.flush()
+                turn = await self._record_turn(session, candidate, result, now, started)
+                lines = self._call_lines(candidate_id, call_id, new_lines, turn.id)
+                session.add_all(lines)
+                # Flushed first, so the call's lines get lower ids than the reply.
+                await session.flush()
+                reply = None
+                if result.reply:
+                    reply = Message(
+                        candidate_id=candidate_id,
+                        author=Author.ASSISTANT,
+                        kind=MessageKind.VOICE,
+                        text=result.reply[0],
+                        client_id=f"{call_id}:{len(call) + len(said)}",
+                        turn_id=turn.id,
+                    )
+                    session.add(reply)
+                if any(line.author is Author.CANDIDATE for line in lines):
+                    row = await session.get_one(Candidate, candidate_id)
+                    row.last_inbound_at = now
+                    row.first_reply_at = row.first_reply_at or now
+
+            events: list[ChatEvent] = [ChatMessage.model_validate(line) for line in lines]
+            if reply is not None:
+                events.append(ChatMessage.model_validate(reply))
             if result.state.status is not candidate.status:
                 events.append(ChatStatus(status=result.state.status))
             await self.channel.publish(candidate_id, [*events, Typing(active=False)])
-            if result.state.status in ENDED and candidate.status not in ENDED:
-                await self._summarize(candidate_id, result.state, application, now)
+        if result.state.status in ENDED and candidate.status not in ENDED:
+            # In the background: the call's reply is complete, and the summary takes a model request of its own.
+            summary = asyncio.create_task(
+                self._summarize(candidate_id, result.state, application_of(candidate), now),
+                name=f"summary-{candidate_id}",
+            )
+            self._background.add(summary)
+            summary.add_done_callback(self._background.discard)
+        yield VoiceTurn(turn_id=turn.id, requests=result.usage.requests)
+
+    async def call_record(self, candidate_id: uuid.UUID, call_id: str) -> dict[int, StoredLine]:
+        """What a call has stored so far, by position in its transcript."""
+        prefix = f"{call_id}:"
+        async with self.sessionmaker() as session:
+            rows = await session.scalars(
+                select(Message).where(Message.candidate_id == candidate_id, Message.client_id.startswith(prefix))
+            )
+            return {
+                int((row.client_id or "").removeprefix(prefix)): StoredLine(row.id, row.author, row.text)
+                for row in rows
+            }
+
+    async def end_call(self, candidate_id: uuid.UUID, call_id: str, lines: dict[int, tuple[str, str]]) -> None:
+        """A call is over: its lines that no turn stored. The candidate's words wait for the text worker like a
+        message typed in the chat, and its reply lands in the chat; ours stay until ElevenLabs' history of the call
+        says how much of them was heard."""
+        if not lines:
+            return
+        async with self.sessionmaker() as session, session.begin():
+            rows = self._call_lines(candidate_id, call_id, lines, turn_id=None)
+            session.add_all(rows)
+            if any(row.author is Author.CANDIDATE for row in rows):
+                now = datetime.now(UTC)
+                await session.execute(
+                    update(Candidate)
+                    .where(Candidate.id == candidate_id)
+                    .values(last_inbound_at=now, first_reply_at=func.coalesce(Candidate.first_reply_at, now))
+                )
+        await self.channel.publish(candidate_id, [ChatMessage.model_validate(row) for row in rows])
+        if any(row.author is Author.CANDIDATE for row in rows):
+            self.ensure_worker(candidate_id)
+
+    def _call_lines(
+        self, candidate_id: uuid.UUID, call_id: str, lines: dict[int, tuple[str, str]], turn_id: int | None
+    ) -> list[Message]:
+        """A call's lines as messages, by position: the candidate's answered by `turn_id` (pending if None), and ours
+        from turns that didn't finish, which are no turn's reply. ElevenLabs ends a line of ours cut off with "..."."""
+        return [
+            Message(
+                candidate_id=candidate_id,
+                author=Author.CANDIDATE if role == "user" else Author.ASSISTANT,
+                kind=MessageKind.VOICE,
+                text=text,
+                # The same line is never stored twice in a call.
+                client_id=f"{call_id}:{position}",
+                turn_id=turn_id if role == "user" else None,
+                interrupted=role != "user" and text.rstrip().endswith(("...", "…")),
+            )
+            for position, (role, text) in sorted(lines.items())
+        ]
+
+    async def correct_heard(self, candidate_id: uuid.UUID, corrections: Sequence[Correction]) -> None:
+        """Keep a call's record to what was heard (voice.py works out what): our lines cut or removed, in the chat and
+        in the model messages of the turn that wrote them, so the history after the call holds only what the
+        candidate heard; the candidate's words transcribed again."""
+        if not corrections:
+            return
+        events: list[ChatEvent] = []
+        async with self.sessionmaker() as session, session.begin():
+            for correction in corrections:
+                message = await session.get_one(Message, correction.message_id)
+                if correction.heard is None:
+                    await session.delete(message)
+                else:
+                    message.text = correction.heard
+                    message.interrupted = message.author is Author.ASSISTANT
+                events.append(Corrected(id=message.id, text=correction.heard, interrupted=message.interrupted))
+                if message.author is Author.CANDIDATE or message.turn_id is None:
+                    continue
+                turn = await session.get_one(Turn, message.turn_id)
+                # Our text leaves the turn's responses (a response left empty goes too: PydanticAI merges the
+                # requests around it); the part heard, if any, ends the turn.
+                history: list[ModelMessage] = []
+                for model_message in ModelMessagesTypeAdapter.validate_python(turn.messages):
+                    if isinstance(model_message, ModelResponse):
+                        parts = [part for part in model_message.parts if not isinstance(part, TextPart)]
+                        if not parts:
+                            continue
+                        model_message = dataclasses.replace(model_message, parts=parts)
+                    history.append(model_message)
+                if correction.heard:
+                    history.append(ModelResponse(parts=[TextPart(correction.heard)]))
+                turn.messages = ModelMessagesTypeAdapter.dump_python(history, mode="json")
+        await self.channel.publish(candidate_id, events)
+
+    async def last_turn_id(self, candidate_id: uuid.UUID) -> int:
+        """Where a call's history from our stored turns ends: the turns before it."""
+        async with self.sessionmaker() as session:
+            last = await session.scalar(select(func.max(Turn.id)).where(Turn.candidate_id == candidate_id))
+        return last or 0
+
+    async def _record_turn(
+        self, session: AsyncSession, candidate: Candidate, result: TurnResult, now: datetime, started: float
+    ) -> Turn:
+        """A finished turn: its model messages, and the state it leaves on the candidate."""
+        turn = Turn(
+            candidate_id=candidate.id,
+            messages=ModelMessagesTypeAdapter.dump_python(result.messages, mode="json"),
+            prompt_version=prompt_version(self.config),
+            models=[m.model_name or "unknown" for m in result.messages if isinstance(m, ModelResponse)],
+            usage=to_jsonable_python(result.usage),
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
+        session.add(turn)
+        await session.flush()
+        row = await session.get_one(Candidate, candidate.id)
+        row.state = result.state.model_dump(mode="json")
+        row.status = result.state.status
+        row.outcome = result.state.outcome
+        if result.reply:
+            row.last_outbound_at = now
+            # A new silence: the reminders start over.
+            row.reminders_sent = 0
+        if result.state.status is Status.COMPLETED and candidate.status is not Status.COMPLETED:
+            row.completed_at = now
+        return turn
 
     async def _tell_failure(
         self, candidate: Candidate, state: ScreeningState, pending: list[Message], error: Exception

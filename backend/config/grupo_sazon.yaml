@@ -264,3 +264,8 @@ templates:
       - "Dame un momento, por favor."
     en:
       - "Give me a moment, please."
+
+# Live voice calls: the ElevenLabs voice that reads our replies, per language (python -m screening.voice).
+voices:
+  es: cjVigY5qzO86Huf0OWal
+  en: cjVigY5qzO86Huf0OWal

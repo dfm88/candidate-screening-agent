@@ -4,9 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# deploy.env fills in only what the environment doesn't already set, so an explicit env var always wins.
+# deploy.env fills in only what the environment doesn't already set, so an explicit env var always wins. The `||`
+# keeps a last line without a newline, which `read` returns as a failure.
 if [[ -f deploy.env ]]; then
-  while IFS='=' read -r key value; do
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     [[ -z "${!key:-}" ]] && export "$key=$value"
   done < deploy.env
@@ -84,7 +85,8 @@ if ! gc secrets describe database-url >/dev/null 2>&1; then
 fi
 
 secrets="DATABASE_URL=database-url:latest"
-env_vars="ENVIRONMENT=${ENVIRONMENT:-demo},GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},LLM_CONTENT_LOGGING=${LLM_CONTENT_LOGGING}"
+# Joined with ";", not ",": SPEECH_ENGINES is JSON (gcloud's ^;^ delimiter, see `gcloud topic escaping`).
+env_vars="ENVIRONMENT=${ENVIRONMENT:-demo};GOOGLE_CLOUD_PROJECT=${GCP_PROJECT};LLM_CONTENT_LOGGING=${LLM_CONTENT_LOGGING}"
 if [[ -n "${LOGFIRE_TOKEN:-}" ]]; then
   log "LOGFIRE_TOKEN secret"
   upsert_secret logfire-token "$LOGFIRE_TOKEN"
@@ -136,8 +138,24 @@ fi
 if gc secrets describe google-api-key >/dev/null 2>&1; then
   secrets="${secrets},GOOGLE_API_KEY=google-api-key:latest"
 else
-  env_vars="${env_vars},SCREENING_FALLBACK_MODELS=[]"
+  env_vars="${env_vars};SCREENING_FALLBACK_MODELS=[]"
 fi
+# Live voice calls (ElevenLabs Speech Engine). Without the key the chat has no call button. The engines' ids come from
+# `ENVIRONMENT=demo python -m screening.voice wss://SERVICE_URL/api/voice/ws`, run once the service has its URL;
+# without them the call button stays hidden too.
+if [[ -n "${ELEVENLABS_API_KEY:-}" ]]; then
+  log "ELEVENLABS_API_KEY secret"
+  upsert_secret elevenlabs-api-key "$ELEVENLABS_API_KEY"
+fi
+if gc secrets describe elevenlabs-api-key >/dev/null 2>&1; then
+  secrets="${secrets},ELEVENLABS_API_KEY=elevenlabs-api-key:latest"
+fi
+if [[ -n "${SPEECH_ENGINES:-}" ]]; then
+  env_vars="${env_vars};SPEECH_ENGINES=${SPEECH_ENGINES}"
+fi
+# The demo prints the ElevenLabs SDK's log of each call (event ids, not the transcripts) to Cloud Logging, to
+# trace a call that ElevenLabs ends on its side.
+env_vars="${env_vars};VOICE_DEBUG=${VOICE_DEBUG:-true}"
 
 log "Deploying ${SERVICE} to Cloud Run"
 # Exactly one always-on instance with CPU always allocated: the in-process reminder loop, SSE streams and
@@ -146,7 +164,7 @@ gc run deploy "$SERVICE" --source . --region "$REGION" \
   --service-account "$SA_EMAIL" \
   --add-cloudsql-instances "$connection_name" \
   --set-secrets "$secrets" \
-  --set-env-vars "$env_vars" \
+  --set-env-vars "^;^${env_vars}" \
   --min-instances 1 --max-instances 1 --no-cpu-throttling \
   --cpu 1 --memory 1Gi --timeout 3600 \
   --allow-unauthenticated

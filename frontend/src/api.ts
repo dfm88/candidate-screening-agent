@@ -39,24 +39,43 @@ export interface ChatSession {
   first_name: string
   language: Language
   status: Status
+  // A live voice call is set up for the chat's current language.
+  voice: boolean
 }
 
 export interface ChatMessage {
   id: number
   author: 'candidate' | 'assistant'
+  // voice: said in a call, the candidate's words as transcribed and ours as heard.
+  kind: 'text' | 'template' | 'voice'
   text: string
+  // Our reply in a call, cut off: the text is the part the candidate heard.
+  interrupted: boolean
   quick_replies: string[]
   client_id: string | null
   created_at: string
 }
 
-// SSE events on /api/chat/{token}/events: `message` ChatMessage, `typing` Typing, `status` ChatStatus.
+// SSE events on /api/chat/{token}/events: `message` ChatMessage, `typing` Typing, `status` ChatStatus,
+// `corrected` Corrected.
 export interface Typing {
   active: boolean
 }
 
 export interface ChatStatus {
   status: Status
+}
+
+// A message from a call, corrected once we know what the candidate heard: text null means none of it was played.
+export interface Corrected {
+  id: number
+  text: string | null
+  interrupted: boolean
+}
+
+export interface VoiceSession {
+  conversation_token: string
+  ticket: string
 }
 
 // --- Recruiter tool ---
@@ -181,6 +200,8 @@ export const api = {
       body: JSON.stringify({ text, client_id: clientId }),
     }),
   eventsUrl: (token: string) => `/api/chat/${token}/events`,
+  // A live voice call: the ElevenLabs token, and the ticket that tells our server which chat it is.
+  voiceSession: (token: string) => request<VoiceSession>(`/api/voice/chat/${token}/session`, { method: 'POST' }),
   // The recruiter tool: the login sets an HttpOnly session cookie, which fetch sends on same-origin requests.
   login: (name: string, password: string) =>
     request<Recruiter>('/api/recruiter/login', { method: 'POST', body: JSON.stringify({ name, password }) }),

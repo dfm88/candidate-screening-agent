@@ -533,9 +533,11 @@ function Transcript({ detail }: { detail: CandidateDetail }) {
           className={`w-fit max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap shadow-sm ${message.author === 'candidate' ? 'ml-auto rounded-br-sm bg-own' : 'rounded-bl-sm bg-white'}`}
         >
           {message.text}
+          {message.interrupted && '…'}
           <span className="mt-0.5 block text-[10px] text-stone-400">
             {formatDate(message.created_at)}
             {message.template_key && ` · template: ${message.template_key.replaceAll('_', ' ')}`}
+            {message.kind === 'voice' && ` · voice call${message.interrupted ? ', cut off: the part the candidate heard' : ''}`}
           </span>
         </div>
       ))}

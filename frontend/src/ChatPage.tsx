@@ -1,7 +1,17 @@
+import type { Status as CallStatus, VoiceConversation } from '@elevenlabs/client'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router'
-import { api, ApiError, type ChatMessage, type ChatStatus, type Language, type Status, type Typing } from './api'
+import {
+  api,
+  ApiError,
+  type ChatMessage,
+  type ChatStatus,
+  type Corrected,
+  type Language,
+  type Status,
+  type Typing,
+} from './api'
 
 const COPY = {
   es: {
@@ -14,6 +24,11 @@ const COPY = {
     notSent: 'No se envió. Toca para reintentar.',
     invalid: 'Este enlace de chat no es válido.',
     loadFailed: 'No se pudo abrir el chat. Recarga la página.',
+    call: 'Llamar',
+    connecting: 'Conectando…',
+    hangUp: 'Colgar',
+    callFailed: 'No se pudo llamar. Permite el micrófono e inténtalo de nuevo.',
+    interrupted: 'interrumpido',
   },
   en: {
     virtual: (client: string) => `${client}'s virtual assistant`,
@@ -25,6 +40,11 @@ const COPY = {
     notSent: 'Not sent. Tap to retry.',
     invalid: "This chat link isn't valid.",
     loadFailed: "Couldn't open the chat. Reload the page.",
+    call: 'Call',
+    connecting: 'Connecting…',
+    hangUp: 'Hang up',
+    callFailed: "Couldn't call. Allow the microphone and try again.",
+    interrupted: 'cut off',
   },
 } as const
 
@@ -50,6 +70,15 @@ function useChatEvents(token: string, enabled: boolean) {
       const message: ChatMessage = JSON.parse(event.data)
       setMessages((current) =>
         current.some((known) => known.id === message.id) ? current : [...current, message].sort((a, b) => a.id - b.id),
+      )
+    })
+    // A message from a call, cut to what the candidate heard, or gone when they heard none of it.
+    source.addEventListener('corrected', (event) => {
+      const { id, text, interrupted }: Corrected = JSON.parse(event.data)
+      setMessages((current) =>
+        text === null
+          ? current.filter((known) => known.id !== id)
+          : current.map((known) => (known.id === id ? { ...known, text, interrupted } : known)),
       )
     })
     source.addEventListener('typing', (event) => setTyping((JSON.parse(event.data) as Typing).active))
@@ -119,12 +148,15 @@ export default function ChatPage() {
             {!connected ? copy.reconnecting : typing ? copy.typing : copy.virtual(session.data.client_name)}
           </p>
         </div>
+        {session.data.voice && !closed && <CallButton token={token} copy={copy} />}
       </header>
 
       <div role="log" aria-live="polite" className="flex-1 space-y-2 overflow-y-auto px-3 py-4">
         {messages.map((message) => (
           <Bubble key={message.id} own={message.author === 'candidate'} time={message.created_at}>
+            {message.kind === 'voice' && <span aria-hidden>🎙️ </span>}
             {message.text}
+            {message.interrupted && <span className="text-stone-400">… ({copy.interrupted})</span>}
           </Bubble>
         ))}
         {waiting.map((message) => (
@@ -209,6 +241,57 @@ function Bubble({
           {new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       )}
+    </div>
+  )
+}
+
+// A live voice call. ElevenLabs does the speech; our server answers each turn, and the turns show up in this chat through
+// the same event stream. Its SDK loads on the first tap: most candidates type, and it's most of the bundle.
+function CallButton({ token, copy }: { token: string; copy: (typeof COPY)[Language] }) {
+  const call = useRef<VoiceConversation | null>(null)
+  const [status, setStatus] = useState<CallStatus>('disconnected')
+  const [failed, setFailed] = useState(false)
+  const live = status === 'connected' || status === 'connecting'
+
+  // Leaving the page hangs up.
+  useEffect(() => () => void call.current?.endSession(), [])
+
+  async function toggle() {
+    if (live) {
+      await call.current?.endSession()
+      return
+    }
+    setFailed(false)
+    setStatus('connecting')
+    try {
+      // Asked first, so a denied microphone fails here, with a message, rather than inside the call.
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true })
+      microphone.getTracks().forEach((track) => track.stop())
+      const [{ VoiceConversation }, { conversation_token, ticket }] = await Promise.all([
+        import('@elevenlabs/client'),
+        api.voiceSession(token),
+      ])
+      call.current = await VoiceConversation.startSession({
+        conversationToken: conversation_token,
+        dynamicVariables: { voice_ticket: ticket },
+        onStatusChange: ({ status }) => setStatus(status),
+      })
+    } catch {
+      setStatus('disconnected')
+      setFailed(true)
+    }
+  }
+
+  return (
+    <div className="ml-auto text-right">
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        className={`rounded-full px-4 py-1.5 text-sm font-semibold ${live ? 'bg-red-600 text-white' : 'bg-white text-brand-700'}`}
+      >
+        {status === 'connecting' ? copy.connecting : live ? `🔊 ${copy.hangUp}` : `🎙️ ${copy.call}`}
+      </button>
+      {failed && <p className="mt-1 max-w-48 text-xs text-brand-100">{copy.callFailed}</p>}
     </div>
   )
 }

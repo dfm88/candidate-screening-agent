@@ -23,6 +23,7 @@ from screening.contract import (
     ChatMessage,
     ChatSession,
     ChatStatus,
+    Corrected,
     Decision,
     DecisionRequest,
     FieldMark,
@@ -131,6 +132,8 @@ async def chat_session(candidate: ChatCandidate, service: Service) -> ChatSessio
         first_name=application_of(candidate).first_name,
         language=candidate.language,
         status=candidate.status,
+        voice=service.settings.elevenlabs_api_key is not None
+        and ScreeningState.model_validate(candidate.state).language in service.settings.speech_engines,
     )
 
 
@@ -167,6 +170,8 @@ async def chat_events(
                 yield ServerSentEvent(event="message", id=str(event.id), data=event)
             elif isinstance(event, Typing):
                 yield ServerSentEvent(event="typing", data=event)
+            elif isinstance(event, Corrected):
+                yield ServerSentEvent(event="corrected", data=event)
             else:
                 yield ServerSentEvent(event="status", data=event)
 

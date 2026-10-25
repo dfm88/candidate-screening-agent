@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from screening.channels import WebChatChannel
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Settings, load_client_config
-from screening.contract import Author, Tab
-from screening.db import Candidate, Message, MessageKind, Source, Turn, make_sessionmaker
+from screening.contract import Author, MessageKind, Tab
+from screening.db import Candidate, Message, Source, Turn, make_sessionmaker
 from screening.domain import (
     Answers,
     AreaMatch,
