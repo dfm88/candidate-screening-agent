@@ -12,6 +12,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from screening import db
 from screening.agent import RecruiterSummary
 from screening.channels import WebChatChannel
+from screening.config import ClientConfig
 from screening.contract import (
     ApplicationCreated,
     ApplicationRequest,
@@ -19,6 +20,7 @@ from screening.contract import (
     CandidateDetail,
     CandidateList,
     CandidateMessage,
+    CandidateProfile,
     CandidateRow,
     ChatMessage,
     ChatSession,
@@ -232,7 +234,14 @@ async def candidate_detail(candidate_id: uuid.UUID, service: Service) -> Candida
     if found is None:
         raise HTTPException(status_code=404, detail="No such candidate.")
     candidate, tab, replies_failed, messages = found
-    config = service.config
+    return CandidateDetail(
+        **dict(profile_of(candidate, tab, replies_failed, service.config)),
+        chat_url=f"/chat/{candidate.chat_token}",
+        transcript=[TranscriptMessage.model_validate(message) for message in messages],
+    )
+
+
+def profile_of(candidate: Candidate, tab: Tab, replies_failed: bool, config: ClientConfig) -> CandidateProfile:
     state = ScreeningState.model_validate(candidate.state)
     marks: dict[FieldName, FieldMark] = {}
     for field in FIELD_ORDER:
@@ -252,7 +261,7 @@ async def candidate_detail(candidate_id: uuid.UUID, service: Service) -> Candida
             note=candidate.decision_note,
             at=candidate.decided_at,
         )
-    return CandidateDetail(
+    return CandidateProfile(
         id=candidate.id,
         full_name=candidate.full_name,
         phone=candidate.phone,
@@ -269,8 +278,6 @@ async def candidate_detail(candidate_id: uuid.UUID, service: Service) -> Candida
         matched_location=Vacancy.model_validate(matched, from_attributes=True) if matched else None,
         summary=RecruiterSummary.model_validate(candidate.summary) if candidate.summary else None,
         decision=decision,
-        chat_url=f"/chat/{candidate.chat_token}",
-        transcript=[TranscriptMessage.model_validate(message) for message in messages],
     )
 
 

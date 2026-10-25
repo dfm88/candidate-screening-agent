@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     session_secret: str | None = None
     # The cookie's Secure flag. Off only for local http, where httpx (the tests) and some browsers wouldn't send it.
     session_https_only: bool = True
+    # The secret in the path of the recruiters' read-only MCP server (/mcp/<token>, mcp_server.py), its only auth:
+    # ChatGPT's custom MCP servers take no static header, and Claude's request headers are a beta for some
+    # organizations only. Unset, there's no MCP server.
+    mcp_token: str | None = None
     # Live voice calls through ElevenLabs Speech Engine (voice.py). Without the key, the chat has no call button.
     elevenlabs_api_key: str | None = None
     # The Speech Engine of each language, as `python -m screening.voice` prints them (a JSON object in the env). A

@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime
 
 import logfire
@@ -8,9 +8,10 @@ from elevenlabs import AsyncElevenLabs
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.sessions import SessionMiddleware
 
-from screening import api, db, voice
+from screening import api, db, mcp_server, voice
 from screening.agent import build_model
 from screening.channels import WebChatChannel
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, Settings, load_client_config
@@ -38,6 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         model=build_model(settings),
         channel=web_chat,
     )
+    recruiter_mcp = mcp_server.build(service) if settings.mcp_token else None
 
     async def tick_forever() -> None:
         while True:
@@ -52,7 +54,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await service.resume()
         ticking = asyncio.create_task(tick_forever(), name="tick")
-        yield
+        # Starlette never runs a mounted app's lifespan, and the MCP app's requests need its session manager running.
+        async with recruiter_mcp.session_manager.run() if recruiter_mcp else nullcontext():
+            yield
         ticking.cancel()
         await asyncio.gather(ticking, return_exceptions=True)
         await service.stop()
@@ -77,7 +81,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api.router)
     app.include_router(api.recruiter_router)
     app.include_router(voice.router)
-    logfire.instrument_fastapi(app, excluded_urls="/api/health")
+    if recruiter_mcp:
+        # Mounted at /mcp with the token as the endpoint's path, so every other path under /mcp is the MCP app's 404,
+        # never the SPA's catch-all. Stateless with JSON responses: Cloud Run has no sticky sessions, and each call is
+        # one request and one answer. The SDK's DNS-rebinding check (on by default for localhost) would reject Cloud
+        # Run's Host with a 421; it protects servers that trust their network, and here the token in the path is the
+        # auth, behind a front end that routes by Host (the SDK's docs: "the honest configuration").
+        app.mount(
+            "/mcp",
+            recruiter_mcp.streamable_http_app(
+                streamable_http_path=f"/{settings.mcp_token}",
+                stateless_http=True,
+                json_response=True,
+                transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+            ),
+        )
+    # /mcp: the token sits in the path, which the request span would keep as its URL and name.
+    logfire.instrument_fastapi(app, excluded_urls="/api/health,/mcp/")
 
     if settings.static_dir:
         _serve_frontend(app, settings)

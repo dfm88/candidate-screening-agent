@@ -26,7 +26,7 @@ npm run dev                               # http://localhost:5173, proxies /api 
 
 **Git hooks:** `uv run --directory backend pre-commit install` once. Before each commit they run ruff, ty, oxlint, tsc and a check for leftover debugger calls. The tests are run by hand.
 
-**Tests:** `cd backend && uv run pytest`. The API and service tests run against the compose Postgres, in a `screening_test` database they create with the migrations; the LLM is stubbed, so tests never call a model.
+**Tests:** `cd backend && uv run pytest`. The API and service tests run against the compose Postgres, in a `screening_test` database they drop and create with the migrations (`TEST_DATABASE=…` names another, for a second checkout on the same Postgres); the LLM is stubbed, so tests never call a model.
 
 **Configuration is environment-only.** `uv run --env-file .env` loads `backend/.env` into the process environment. The app settings, the Logfire SDK (`LOGFIRE_TOKEN`) and Google auth (`CLOUDSDK_CONFIG`) all read it from there, so there's no second loading mechanism to keep in sync. Logfire and GCP are optional: without a token, traces stay on the console. The frontend has no env file, because anything Vite exposes ends up in the public bundle.
 
@@ -88,6 +88,55 @@ To run the production image locally: `docker compose --profile app up --build` (
 - **Changing the password doesn't end open sessions,** because the cookie is stateless. After the review, rotate both: `RECRUITER_PASSWORD=… SESSION_SECRET=$(openssl rand -hex 32) ./deploy.sh`.
 - **No rate limiting** on the login, nor yet on the public endpoints.
 - **A decision during a running turn is rare and accepted:** the candidate may get the decision between two agent replies.
+
+## MCP server for recruiters
+
+A recruiter can ask their own assistant (Claude, ChatGPT) who is ready to call, instead of opening the recruiter tool. With `MCP_TOKEN` set, `/mcp/<MCP_TOKEN>` serves an MCP server with three read-only tools ([`mcp_server.py`](backend/src/screening/mcp_server.py), on the official MCP Python SDK). Each returns what the recruiter API returns:
+
+- `list_candidates(tab?, q?)`: one tab or every tab, the search, and the tab counts.
+- `get_candidate(candidate_id)`: the key data, the AI summary, the rules' outcome and the recruiter's decision, and the matching restaurant.
+  - No transcript.
+  - No chat link: it carries the chat token, which is the candidate's own access to their chat.
+- `get_metrics()`: the metrics row.
+
+**Connecting an assistant.** Every client takes the server's URL, `https://SERVICE_URL/mcp/<token>`, with no sign-in. To copy the deployed URL to the clipboard without printing the token, run this from the repo root:
+
+```bash
+( export GCP_PROJECT="$(sed -n 's/^GCP_PROJECT=//p' deploy.env)" CLOUDSDK_CONFIG="$(sed -n 's/^CLOUDSDK_CONFIG=//p' deploy.env)"
+  url="$(gcloud run services describe candidate-screening-agent --project "$GCP_PROJECT" --region europe-southwest1 --format 'value(status.url)')"
+  printf '%s/mcp/%s' "$url" "$(gcloud secrets versions access latest --secret mcp-token --project "$GCP_PROJECT")" | pbcopy )
+```
+
+- **Claude, web and desktop app:**
+  1. Go to Customize → Connectors and click **Add custom connector**.
+  2. Paste the URL as the MCP server URL, choose **No sign-in** if asked, and click **Add**.
+  3. In a chat, the **+** menu → Connectors turns it on or off.
+
+  On Team and Enterprise plans, an Owner adds it under Organization settings → Connectors (Add → Custom → Web), and each member clicks **Connect**. Claude calls the server from Anthropic's cloud, so it needs the deployed HTTPS URL, not localhost.
+- **Claude Code, the CLI:** `claude mcp add --transport http --scope user screening "$(pbpaste)"`, then `claude mcp list` (or `/mcp` in a session) should show it connected.
+  - `--scope user` keeps the URL in `~/.claude.json`. Never use `--scope project`: it writes the URL, token included, to a `.mcp.json` meant for version control.
+  - Against a local app, set `MCP_TOKEN` in `backend/.env` and use `http://localhost:8000/mcp/<token>`.
+- **ChatGPT, on the web (not tried):**
+  1. At chatgpt.com/plugins, click **+** → **Add custom MCP server**.
+  2. Give it a name, paste the URL as the Server URL, and choose **No authentication**.
+  3. Confirm "I understand and want to continue", then **Create as a plugin**, and install it.
+  4. In a chat, type `@` to pick it.
+
+  A workspace admin may have to allow custom MCP servers first.
+
+Then ask, for example, "Who's ready to call in Madrid, and what are their phone numbers?"
+
+**How it runs.**
+- **Stateless, with JSON responses:** Cloud Run has no sticky sessions, and each tool call is one request and one answer.
+- **The app's lifespan runs the SDK's session manager,** because Starlette never runs a mounted app's lifespan.
+- **The SDK's DNS-rebinding check is off.** It would answer Cloud Run's `Host` with a 421. It protects servers that trust their network; this one's auth is the token.
+
+**Limits.**
+- **The URL is the credential.** Anyone who has it can read every candidate. ChatGPT's custom MCP servers take OAuth or nothing, and Claude's request headers are a beta for some organizations only, so the token goes in the path, which every client takes. It's one token for everyone; `MCP_TOKEN=$(openssl rand -hex 32) ./deploy.sh` rotates it and cuts off every connector at once.
+- **Logs:** Logfire leaves `/mcp` requests out (`excluded_urls`) and records each call by the tool's name (the SDK's own span), without its arguments or results. Cloud Run's request log and uvicorn's access log still keep the URL with the token, as they do for chat links.
+- **Candidate data reaches a third-party assistant,** and through it that assistant's provider. Connecting one is the client's decision.
+- **Candidate text is untrusted input.** The candidate types their name. The summary, the open questions and the notes on unclear answers are written by a model from what the candidate typed. All of it reaches an assistant that may hold other tools (email, a calendar), so a candidate could try to steer it. That's why every tool is read-only, and the server's instructions tell the assistant to treat these fields as data.
+- **Recording decisions waits for OAuth.** A decision also messages the candidate, so it needs to know which recruiter is acting. The design: OAuth, with our recruiter login as the authorization server (the SDK supports it), so each decision carries a recruiter's name and each recruiter's access can be revoked on its own. Design only; not built.
 
 ## Timeouts, retries and limits
 
@@ -253,7 +302,7 @@ The demo deployment logs full LLM prompts and completions to Logfire (`LLM_CONTE
 
 The demo also logs the ElevenLabs SDK's call events to Cloud Logging (`VOICE_DEBUG=true`): event ids, transcript lengths, ElevenLabs' conversation id and the replies we send whole, not the transcripts. Our per-turn line in Logfire (`voice turn at …`) carries the same conversation id, so a call that ElevenLabs ended on its side can be followed in both.
 
-Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD`, `LOGFIRE_TOKEN` and `ELEVENLABS_API_KEY` (voice calls) are optional, and `SESSION_SECRET` is generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`). Voice calls also need the demo's own engines: `ENVIRONMENT=demo uv run --env-file .env python -m screening.voice wss://SERVICE_URL/api/voice/ws` prints the `SPEECH_ENGINES` value for `deploy.env`.
+Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD`, `LOGFIRE_TOKEN` and `ELEVENLABS_API_KEY` (voice calls) are optional; `SESSION_SECRET` and `MCP_TOKEN` (the [MCP server](#mcp-server-for-recruiters)'s URL) are generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`). Voice calls also need the demo's own engines: `ENVIRONMENT=demo uv run --env-file .env python -m screening.voice wss://SERVICE_URL/api/voice/ws` prints the `SPEECH_ENGINES` value for `deploy.env`.
 
 The service runs as exactly one always-on instance (`--min-instances 1 --max-instances 1 --no-cpu-throttling`), because the reminder loop, the SSE streams and the per-conversation locks live in that process.
 

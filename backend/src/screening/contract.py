@@ -20,6 +20,12 @@ RECRUITER_PASSWORD isn't set). Writes are POST only: with the cookie's SameSite=
     GET  /api/recruiter/candidates/{id}             → CandidateDetail · 404
     POST /api/recruiter/candidates/{id}/decision    DecisionRequest → Decision · 409 not finished or already decided
     GET  /api/recruiter/metrics                     → Metrics
+
+The MCP server for recruiters' own assistants (mcp_server.py): read-only, and only with MCP_TOKEN set. The token in
+the path is the only auth; any other path under /mcp is a 404.
+
+    POST /mcp/{MCP_TOKEN}     Streamable HTTP, stateless, JSON responses. Tools: list_candidates → CandidateList,
+                              get_candidate → CandidateProfile, get_metrics → Metrics
 """
 
 from datetime import datetime
@@ -213,7 +219,9 @@ class TranscriptMessage(ChatMessage):
     template_key: str | None
 
 
-class CandidateDetail(BaseModel):
+class CandidateProfile(BaseModel):
+    """The candidate's page without the chat link or the transcript: what the MCP server (mcp_server.py) returns too."""
+
     id: UUID
     full_name: str
     phone: str
@@ -231,6 +239,10 @@ class CandidateDetail(BaseModel):
     matched_location: Vacancy | None
     summary: RecruiterSummary | None
     decision: Decision | None
+
+
+class CandidateDetail(CandidateProfile):
+    # Carries the chat token, which is the candidate's own access to their chat.
     chat_url: str
     transcript: list[TranscriptMessage]
 

@@ -120,6 +120,17 @@ elif ! gc secrets describe session-secret >/dev/null 2>&1; then
   upsert_secret session-secret "$(openssl rand -hex 32)"
 fi
 secrets="${secrets},SESSION_SECRET=session-secret:latest"
+# The secret in the URL of the recruiters' MCP server (/mcp/<token>), its only auth: MCP_TOKEN when given (to rotate
+# it), otherwise generated once and kept, so a connector keeps working across redeploys. Never printed: the README
+# copies the URL to the clipboard.
+if [[ -n "${MCP_TOKEN:-}" ]]; then
+  log "MCP_TOKEN secret"
+  upsert_secret mcp-token "$MCP_TOKEN"
+elif ! gc secrets describe mcp-token >/dev/null 2>&1; then
+  log "MCP_TOKEN secret (generated)"
+  upsert_secret mcp-token "$(openssl rand -hex 32)"
+fi
+secrets="${secrets},MCP_TOKEN=mcp-token:latest"
 # The screening model (OpenAI) can't run without its key.
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   log "OPENAI_API_KEY secret"

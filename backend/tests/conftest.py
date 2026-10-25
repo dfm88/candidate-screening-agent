@@ -14,7 +14,8 @@ from screening.config import Settings
 # Tests never call a real model; conversational behaviour is covered by the evals.
 models.ALLOW_MODEL_REQUESTS = False
 
-TEST_DATABASE = "screening_test"
+# The fixture below drops and recreates it: a second checkout testing against the same Postgres sets its own.
+TEST_DATABASE = os.environ.get("TEST_DATABASE", "screening_test")
 
 
 @pytest.fixture
