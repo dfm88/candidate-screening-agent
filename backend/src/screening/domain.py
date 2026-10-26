@@ -25,6 +25,10 @@ class Status(StrEnum):
     WITHDRAWN = "withdrawn"
 
 
+# A screening that's over: nothing more is asked.
+ENDED = frozenset({Status.COMPLETED, Status.WITHDRAWN})
+
+
 class Outcome(StrEnum):
     QUALIFIED = "qualified"
     NOT_QUALIFIED = "not_qualified"

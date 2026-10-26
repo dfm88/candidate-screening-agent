@@ -24,6 +24,7 @@ from pydantic_evals import increment_eval_metric
 from screening.agent import (
     Medium,
     RecruiterSummary,
+    asks_something,
     call_history,
     history_from_turns,
     run_turn,
@@ -32,6 +33,7 @@ from screening.agent import (
 )
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Locale, load_client_config
 from screening.domain import (
+    ENDED,
     Application,
     Availability,
     FieldName,
@@ -71,6 +73,8 @@ class ScriptedTurn(BaseModel):
     provides: list[FieldName] = []
     # How this turn's messages came, when not as the case's do: a chat by voice notes, then a call.
     medium: Medium | None = None
+    # The candidate asks us to wait ("let me check my postcode"): the reply says we will and asks nothing.
+    asks_to_wait: bool = False
 
 
 class Persona(BaseModel):
@@ -275,8 +279,10 @@ def make_task(
             city=location.city,
         )
         stored_turns: list[list[ModelMessage]] = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
-        # A call's transcript so far, as (role, content) lines: what a voice turn reads after the stored turns.
+        # A call's transcript so far, as (role, content) lines: what a voice turn reads after the stored turns. Its
+        # turns join the stored ones when it ends, as the service stores them.
         call: list[tuple[str, str]] = []
+        call_turns: list[list[ModelMessage]] = []
         state = ScreeningState(status=Status.INVITED, language=application.language)
         conversation_id = f"eval-{uuid.uuid4().hex[:8]}"
         turns: list[Turn] = []
@@ -303,8 +309,16 @@ def make_task(
                 if turns:
                     turns[-1].asked_about = candidate.output.asked_about
                 messages, provided, done = candidate.output.messages, candidate.output.provided, candidate.output.done
+            # A script's empty turn right after a call is the call ending there: the chat picks up if the screening
+            # is open and our last line in the call asks nothing (ScreeningService.pick_up_after_call).
+            picks_up = False
+            if medium is not Medium.VOICE and call:
+                last_line = next((content for role, content in reversed(call) if role == "agent"), "")
+                picks_up = not messages and state.status not in ENDED and not asks_something(last_line)
+                stored_turns += call_turns
+                call, call_turns = [], []
             # A last message ("no, gracias") still goes out before the candidate leaves.
-            if not messages:
+            if not messages and not picks_up:
                 break
 
             started = time.perf_counter()
@@ -324,6 +338,7 @@ def make_task(
             state = result.state
             if medium is Medium.VOICE:
                 call += [("user", message) for message in messages] + [("agent", line) for line in result.reply]
+                call_turns.append(result.messages)
             else:
                 stored_turns.append(result.messages)
 

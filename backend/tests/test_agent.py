@@ -77,6 +77,40 @@ async def test_tool_calls_update_the_state_and_paragraphs_become_messages() -> N
     assert result.state.is_saved(FieldName.SERVICE_AREA)
 
 
+@pytest.mark.parametrize(
+    ("responses", "reply"),
+    [
+        # Seen in a call: "Got it, afternoons." and nothing more. One more request does what's left.
+        (["Vale.", "Vale. ¿Tienes carnet de conducir en vigor?"], ["Vale. ¿Tienes carnet de conducir en vigor?"]),
+        # Once: whatever the second writes stands, a deliberate wait too.
+        (["Claro.", "Claro, aquí te espero."], ["Claro, aquí te espero."]),
+        # A turn that called a tool is left as it is.
+        ([ToolCallPart("save_answers", {"license": "yes"}), "Vale."], ["Vale."]),
+    ],
+)
+async def test_a_reply_that_asks_nothing_and_calls_no_tool_gets_one_more_request(
+    responses: list[ToolCallPart | str], reply: list[str]
+) -> None:
+    sent: list[list[ModelMessage]] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        sent.append(messages)
+        part = responses[len(sent) - 1]
+        return ModelResponse(parts=[part if isinstance(part, ToolCallPart) else TextPart(part)])
+
+    result = await run_turn(
+        state=ScreeningState(status=Status.INVITED, language=Language.ES),
+        application=APPLICATION,
+        config=CONFIG,
+        candidate_messages=["sí, tengo carnet"],
+        history=[],
+        model=FunctionModel(respond),
+        now=NOW,
+        conversation_id="test",
+    )
+    assert (result.reply, len(sent)) == (reply, 2)
+
+
 async def test_each_turn_is_stored_exactly_as_sent_with_its_context_block() -> None:
     sent: list[list[ModelMessage]] = []
     result = await turn(["sí, tengo carnet"], sent)

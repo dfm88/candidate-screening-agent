@@ -27,12 +27,14 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ModelRetry,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     RunContext,
     TextPart,
     TextPartDelta,
+    ToolCallPart,
     UserPromptPart,
 )
 from pydantic_ai.capabilities import Capability
@@ -46,6 +48,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 from screening import domain
 from screening.config import COUNTRY_NAMES, ClientConfig, Country, Language, Settings
 from screening.domain import (
+    ENDED,
     Application,
     EndReason,
     FieldName,
@@ -158,6 +161,47 @@ def prompt_version(config: ClientConfig, model_settings: ModelSettings = MODEL_S
     # The whole client config: the first message and quick-reply labels are in the history, the areas in tool results.
     content += SPOKEN + LIVE_CALL + config.model_dump_json() + CODE
     return hashlib.sha256(content.encode()).hexdigest()[:8]
+
+
+def asks_something(message: str) -> bool:
+    """Whether a message leaves the candidate something to answer. The model writes the "?" reliably (in a call the
+    voice needs it for the intonation), so the mark is the test, here and in the evals."""
+    return "?" in message
+
+
+@screening_agent.output_validator
+def leaves_something_to_answer(ctx: RunContext[Deps], output: str) -> str:
+    """A turn that doesn't close the screening leaves the candidate something to answer. Seen in a call: "Got it,
+    afternoons." and nothing more, the line said while a tool runs, written without the tool call. A reply whose last
+    message asks nothing, in a turn that called no tool, gets one more request in the same run, which does what's left
+    or keeps a deliberate wait. Once: the second reply stands."""
+    messages = [message for message in re.split(r"\n\s*\n", output) if message.strip()]
+    called_a_tool = any(
+        isinstance(part, ToolCallPart)
+        for message in ctx.messages
+        if message.run_id == ctx.run_id
+        for part in message.parts
+    )
+    if (
+        ctx.partial_output
+        or ctx.retry
+        or ctx.deps.state.status in ENDED
+        or called_a_tool
+        or (messages and asks_something(messages[-1]))
+    ):
+        return output
+    if ctx.deps.medium is Medium.VOICE:
+        # What streamed has been spoken, and what this request writes is said after it.
+        raise ModelRetry(
+            "That reply has been spoken as it is, and it asks the candidate nothing and calls no tool. If they need to "
+            "answer something, go on from it without repeating it: save what they said if it answers a question, then "
+            "ask. If waiting is right, say only that you're listening, in two or three words."
+        )
+    raise ModelRetry(
+        "That reply asks the candidate nothing and calls no tool, and the screening isn't over. If they need to "
+        "answer something, write the reply again, ending with it: save what they said first if it answers a "
+        "question. If waiting is right, give the same reply."
+    )
 
 
 @screening_agent.instructions

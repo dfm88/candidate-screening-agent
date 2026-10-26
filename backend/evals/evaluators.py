@@ -16,8 +16,9 @@ from pydantic_evals.reporting.analyses import ReportAnalysis, ScalarResult, Tabl
 
 from evals.task import CONFIG, Expected, Persona, ScreeningRun
 from screening import domain
+from screening.agent import Medium, asks_something
 from screening.config import Country
-from screening.domain import FieldName, ScreeningState, Status
+from screening.domain import ENDED, FieldName, ScreeningState, Status
 
 Context = EvaluatorContext[Persona, ScreeningRun, Expected]
 
@@ -35,6 +36,15 @@ def normalize(text: str) -> str:
 
 def word_count(text: str) -> int:
     return len(text.split())
+
+
+def opening(sentence: str) -> str:
+    """How a sentence opens: its first two words, or the first alone when a comma or a stop ends it ("Got it, …",
+    "Entendido, …", "I understood …")."""
+    words = sentence.split()[:2]
+    if words and words[0][-1] in ",.!:;":
+        words = words[:1]
+    return normalize(" ".join(words)).strip(",.!:;¡¿")
 
 
 # --- Outcome and saved answers ---------------------------------------------------------------------------------
@@ -191,7 +201,7 @@ class MessageShape(Evaluator[Persona, ScreeningRun, Expected]):
                 problems.append(f"turn {number}: a message over 40 words")
             if not recap and questions > 1:
                 problems.append(f"turn {number}: {questions} questions")
-            if questions and "?" not in turn.reply[-1]:
+            if questions and not asks_something(turn.reply[-1]):
                 problems.append(f"turn {number}: the question isn't in the last message")
         bad_turns = {problem.split(":")[0] for problem in problems}
         score = 1 - len(bad_turns) / len(ctx.output.turns) if ctx.output.turns else 1.0
@@ -211,6 +221,62 @@ class NoStandaloneAcknowledgement(Evaluator[Persona, ScreeningRun, Expected]):
         ]
         reason = ", ".join(repr(message) for message in found) or None
         return {"no_standalone_ack": EvaluationReason(value=not found, reason=reason)}
+
+
+@dataclass
+class OpenEndsAsking(Evaluator[Persona, ScreeningRun, Expected]):
+    """A screening left open ends on our question, so the candidate has something to answer. Seen in a call: "Got
+    it, afternoons." and nothing more, and the candidate waited."""
+
+    def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        turns = ctx.output.turns
+        last = turns[-1].reply[-1] if turns and turns[-1].reply else ""
+        waiting = ctx.output.state.status not in ENDED and not asks_something(last)
+        return {"open_ends_asking": EvaluationReason(value=not waiting, reason=repr(last) if waiting else None)}
+
+
+@dataclass
+class VariedOpenings(Evaluator[Persona, ScreeningRun, Expected]):
+    """A style measure, not a rule: in a call, the share of replies that don't open with the same formula as the one
+    before, as a person on the phone varies it. Seen in a call: "I understood …" after five saves running. A reply
+    that opens with a question opens with its content. No value for a conversation without two such replies in a row.
+    """
+
+    def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        script = ctx.inputs.script or []
+        repeated: list[str] = []
+        pairs = 0
+        previous = None
+        for number, turn in enumerate(ctx.output.turns, start=1):
+            scripted = script[number - 1] if number <= len(script) else None
+            medium = scripted.medium if scripted and scripted.medium else ctx.inputs.medium
+            first = re.split(r"(?<=[.!?])\s", turn.reply[0])[0] if turn.reply else ""
+            current = opening(first) if medium is Medium.VOICE and first and not asks_something(first) else None
+            if current and previous:
+                pairs += 1
+                if current == previous:
+                    repeated.append(f"turn {number}: {current!r}")
+            previous = current
+        if not pairs:
+            return {}
+        score = 1 - len(repeated) / pairs
+        return {"varied_openings": EvaluationReason(value=score, reason="; ".join(repeated) or None)}
+
+
+@dataclass
+class WaitHonoured(Evaluator[Persona, ScreeningRun, Expected]):
+    """When the candidate asks us to wait, the reply says we will and asks nothing. Seen in a call: "Hold on, let me
+    check my postcode" answered with the postcode question again."""
+
+    def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        # A conversation can end before its script does.
+        turns = zip(ctx.inputs.script or [], ctx.output.turns, strict=False)
+        asked = [
+            f"turn {number}: {' '.join(turn.reply)!r}"
+            for number, (scripted, turn) in enumerate(turns, start=1)
+            if scripted.asks_to_wait and any(asks_something(message) for message in turn.reply)
+        ]
+        return {"wait_honoured": EvaluationReason(value=not asked, reason="; ".join(asked) or None)}
 
 
 @dataclass
@@ -310,7 +376,8 @@ SUMMARY_RUBRIC = (
     "already sees: caveats to check before deciding, and notes worth knowing. Empty lists are right when the "
     "transcript holds nothing the key data lack; what the key data already say, in any wording, is no omission. "
     "Each item must come from something the candidate said in the transcript, must not contradict it or restate the "
-    "key data, and must make no guess about the person (reliability, motivation, age, origin, gender). Score 1.0 when "
+    "key data, must be about the candidate rather than how the conversation went (what they asked, in what order), "
+    "and must make no guess about the person (reliability, motivation, age, origin, gender). Score 1.0 when "
     "every item holds and nothing the recruiter should know beyond the key data is left out; lower for each item that "
     "breaks a rule and for each such omission."
 )

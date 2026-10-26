@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from screening.agent import (
     Medium,
     TurnResult,
+    asks_something,
     call_history,
     history_from_turns,
     prompt_version,
@@ -48,9 +49,8 @@ from screening.contract import (
     Typing,
 )
 from screening.db import Candidate, Message, Source, Turn
-from screening.domain import Application, Outcome, ScreeningState, Status, transition
+from screening.domain import ENDED, Application, Outcome, ScreeningState, Status, transition
 
-ENDED = frozenset({Status.COMPLETED, Status.WITHDRAWN})
 # How often the lifespan calls tick().
 TICK_SECONDS = 30
 # Any constant, the same in every instance: two of them overlap while Cloud Run rolls out a revision.
@@ -201,6 +201,9 @@ class ScreeningService:
         self._workers: dict[uuid.UUID, asyncio.Task[None]] = {}
         # Conversations that got a message after their worker last looked: it looks again before it stops.
         self._kicked: set[uuid.UUID] = set()
+        # Conversations whose call ended on a line of ours asking nothing: their worker runs a turn with nothing
+        # pending (pick_up_after_call).
+        self._pick_ups: set[uuid.UUID] = set()
         # A conversation's turns never overlap: the text worker and a voice call both take its lock.
         self._locks: defaultdict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Text turns whose run a new message would supersede (receive()): None, or when the newest such message came
@@ -571,7 +574,9 @@ class ScreeningService:
                             select(Turn.messages).where(Turn.candidate_id == candidate_id).order_by(Turn.id)
                         )
                     )
-                if not pending:
+                picking_up = candidate_id in self._pick_ups
+                self._pick_ups.discard(candidate_id)
+                if not pending and not picking_up:
                     # A message stored while we were looking has kicked us: look again rather than leave it
                     # unanswered.
                     if candidate_id in self._kicked:
@@ -830,6 +835,24 @@ class ScreeningService:
         if any(row.author is Author.CANDIDATE for row in rows):
             self.ensure_worker(candidate_id)
 
+    async def pick_up_after_call(self, candidate_id: uuid.UUID, call_id: str) -> None:
+        """Once a call is over and its record kept to what was heard: if the screening is open and our last line in
+        the call asks nothing (cut off, a wait, a turn that stopped short), the chat picks up from there, so it doesn't
+        sit silent. A text turn with no new messages, which the prompt says comes after a call. Words of the
+        candidate's that no turn answered get their own turn instead (end_call), which picks up too."""
+        record = await self.call_record(candidate_id, call_id)
+        ours = [line.text for _, line in sorted(record.items()) if line.author is Author.ASSISTANT]
+        async with self.sessionmaker() as session:
+            candidate = await session.get_one(Candidate, candidate_id)
+            pending = await session.scalar(
+                select(func.count()).select_from(Message).where(Message.candidate_id == candidate_id, PENDING)
+            )
+        if not record or pending or candidate.status in ENDED or (ours and asks_something(ours[-1])):
+            return
+        logfire.info("call ended on a line asking nothing: the chat picks up", candidate_id=candidate_id)
+        self._pick_ups.add(candidate_id)
+        self.ensure_worker(candidate_id)
+
     def _call_lines(
         self, candidate_id: uuid.UUID, call_id: str, lines: dict[int, tuple[str, str]], turn_id: int | None
     ) -> list[Message]:
@@ -926,6 +949,9 @@ class ScreeningService:
             )
             session.add(turn)
             await session.flush()
+            if not pending:
+                # A pick-up after a call: nothing waits for an answer, so there's nothing to promise.
+                return []
             told = await session.scalar(
                 select(Message.id)
                 .where(

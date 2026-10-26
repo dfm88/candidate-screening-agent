@@ -381,7 +381,7 @@ class Call:
         answers in the chat; what was heard of turns cut off; and the turn cut off at the end, as sent. Then
         everything stored against ElevenLabs' history of the call, which knows how much of each of our lines was
         played, and the call deleted there. We keep what was heard; ElevenLabs keeps nothing, unless VOICE_RECORDING
-        keeps the call there for the owner's test calls."""
+        keeps the call there for the owner's test calls. Last, the chat picks up if our last line asks nothing."""
         record = await self.service.call_record(self.candidate_id, self.call_id)
         lines = {
             position: line for position, line in enumerate(self.latest) if position not in record and words(line[1])
@@ -389,31 +389,38 @@ class Call:
         if self.cut is not None:
             lines[self.cut[0]] = ("agent", self.cut[1])
         await self.service.end_call(self.candidate_id, self.call_id, lines)
-        if conversation_id is None:
-            return
-        deadline = time.monotonic() + HISTORY_WAIT_SECONDS
-        history = await elevenlabs.conversational_ai.conversations.get(conversation_id)
-        while history.status not in ("done", "failed") and time.monotonic() < deadline:
-            await asyncio.sleep(2)
-            history = await elevenlabs.conversational_ai.conversations.get(conversation_id)
-        found: list[Correction] = []
-        if history.status in ("done", "failed"):
-            # A failed call's history is final too: it holds what was played before it failed.
-            heard = [(item.role, item.message or "") for item in history.transcript if item.role in ("user", "agent")]
-            found = corrections(await self.service.call_record(self.candidate_id, self.call_id), heard)
-            await self.service.correct_heard(self.candidate_id, found)
-        else:
-            logfire.warn("voice call history not ready: our lines kept as stored", conversation_id=conversation_id)
-        kept = self.service.settings.voice_recording
-        if not kept:
-            await elevenlabs.conversational_ai.conversations.delete(conversation_id)
-        logfire.info(
-            "voice call ended ({status}): {count} corrections from ElevenLabs' history, {where}",
-            status=history.status,
-            count=len(found),
-            where="kept there (VOICE_RECORDING)" if kept else "deleted there",
-            conversation_id=conversation_id,
-        )
+        try:
+            if conversation_id is not None:
+                deadline = time.monotonic() + HISTORY_WAIT_SECONDS
+                history = await elevenlabs.conversational_ai.conversations.get(conversation_id)
+                while history.status not in ("done", "failed") and time.monotonic() < deadline:
+                    await asyncio.sleep(2)
+                    history = await elevenlabs.conversational_ai.conversations.get(conversation_id)
+                found: list[Correction] = []
+                if history.status in ("done", "failed"):
+                    # A failed call's history is final too: it holds what was played before it failed.
+                    heard = [
+                        (item.role, item.message or "") for item in history.transcript if item.role in ("user", "agent")
+                    ]
+                    found = corrections(await self.service.call_record(self.candidate_id, self.call_id), heard)
+                    await self.service.correct_heard(self.candidate_id, found)
+                else:
+                    logfire.warn(
+                        "voice call history not ready: our lines kept as stored", conversation_id=conversation_id
+                    )
+                kept = self.service.settings.voice_recording
+                if not kept:
+                    await elevenlabs.conversational_ai.conversations.delete(conversation_id)
+                logfire.info(
+                    "voice call ended ({status}): {count} corrections from ElevenLabs' history, {where}",
+                    status=history.status,
+                    count=len(found),
+                    where="kept there (VOICE_RECORDING)" if kept else "deleted there",
+                    conversation_id=conversation_id,
+                )
+        finally:
+            # After the corrections, so our last line is as heard; as stored if ElevenLabs' history failed.
+            await self.service.pick_up_after_call(self.candidate_id, self.call_id)
 
 
 async def configure_engines(ws_url: str, settings: Settings, config: ClientConfig) -> dict[Language, str]:

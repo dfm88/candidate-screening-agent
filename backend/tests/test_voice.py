@@ -18,7 +18,15 @@ import pytest
 from elevenlabs import AsyncElevenLabs
 from elevenlabs.speech_engine import ConversationMessage, SpeechEngineSession
 from logfire.testing import CaptureLogfire
-from pydantic_ai import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -42,9 +50,14 @@ ASK_LICENSE = "Vale. ¿Tienes carnet de conducir en vigor?"
 @dataclass
 class Model:
     """Answers each thing the candidate says with a fixed reply, the first word streamed on its own. A reply to what's
-    in `hold` waits for `gate`: after its first word when streamed (a call), before it's sent when whole (the chat)."""
+    in `hold` waits for `gate`: after its first word when streamed (a call), before it's sent when whole (the chat).
+    A turn with no new messages (the chat picking up after a call) is answered under ""."""
 
     replies: dict[str, str]
+    # In the chat, replies to these call a tool first: its name and arguments.
+    tools: dict[str, tuple[str, dict[str, str]]] = field(default_factory=dict)
+    # What the second request writes when the reply asked nothing (agent.leaves_something_to_answer).
+    continuations: dict[str, str] = field(default_factory=dict)
     hold: set[str] = field(default_factory=set)
     # Replies to these fail, as when every model is down.
     fail: set[str] = field(default_factory=set)
@@ -57,9 +70,14 @@ class Model:
     def reply_to(self, messages: list[ModelMessage]) -> tuple[str, str]:
         self.sent.append(messages)
         self.called.set()
-        prompt = messages[-1].parts[-1]
-        assert isinstance(prompt, UserPromptPart)
-        said = re.findall(r"<message>(.*?)</message>", str(prompt.content))[-1]
+        prompts = [
+            str(part.content) for message in messages for part in message.parts if isinstance(part, UserPromptPart)
+        ]
+        # The turn's own prompt is the last with the candidate's words; a retry's feedback comes as a prompt after it.
+        prompt = next(prompt for prompt in reversed(prompts) if "<new_messages>" in prompt)
+        said = (re.findall(r"<message>(.*?)</message>", prompt) or [""])[-1]
+        if "<retry_feedback>" in prompts[-1]:
+            return said, self.continuations[said]
         return said, self.replies[said]
 
     async def stream(self, messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
@@ -82,6 +100,9 @@ class Model:
         self.most_running = max(self.most_running, self.running)
         try:
             said, reply = self.reply_to(messages)
+            if said in self.tools and not isinstance(messages[-1].parts[-1], ToolReturnPart):
+                name, arguments = self.tools[said]
+                return ModelResponse(parts=[ToolCallPart(name, arguments)])
             if said in self.hold:
                 await self.gate.wait()
             return ModelResponse(parts=[TextPart(reply)])
@@ -273,6 +294,58 @@ async def test_a_transcript_handler_reads_its_own_event_id_from_the_sdk() -> Non
     assert read == [7, 8]
 
 
+async def test_a_turn_in_a_call_that_asks_nothing_goes_on_after_what_was_spoken_once(
+    services: list[ScreeningService], database: str
+) -> None:
+    got_it = "Vale, Ana."
+    model = Model({START: ASK_NAME, NAME: got_it}, continuations={NAME: ASK_LICENSE})
+    service, candidate, call = await call_on(services, database, model)
+    elevenlabs = ElevenLabs()
+    lines = [("user", START), ("agent", ASK_NAME), ("user", NAME)]
+
+    await call.answer(transcript(*lines[:1]), elevenlabs.send_response, "conv_1")
+    await call.answer(transcript(*lines), elevenlabs.send_response, "conv_1")
+    # Seen live: "Got it, afternoons." and nothing more. What was spoken stays, and a second request goes on from it.
+    assert " ".join(elevenlabs.spoken[-1].split()) == f"{got_it} {ASK_LICENSE}"
+
+    # Once: the second reply stands even when it asks nothing, a deliberate wait.
+    wait = "Espera un momento."
+    model.replies[wait], model.continuations[wait] = "Claro, Ana.", "Te escucho."
+    requests = len(model.sent)
+    await call.answer(
+        transcript(*lines, ("agent", f"{got_it} {ASK_LICENSE}"), ("user", wait)), elevenlabs.send_response, "conv_1"
+    )
+    assert (len(model.sent) - requests, elevenlabs.spoken[-1]) == (2, "Claro, Ana. Te escucho.")
+
+
+async def test_a_call_ending_on_a_line_that_asks_nothing_is_picked_up_in_the_chat(
+    services: list[ScreeningService], database: str
+) -> None:
+    wait = "Espera, que me llaman."
+    pick_up = "Seguimos por aquí cuando puedas. ¿Tu nombre completo es Ana Torres Gil?"
+    model = Model({START: ASK_NAME, wait: "Claro, Ana.", "": pick_up}, continuations={wait: "Te espero."})
+    service, candidate, call = await call_on(services, database, model)
+    elevenlabs = ElevenLabs()
+    await call.answer(transcript(("user", START)), elevenlabs.send_response, "conv_1")
+    await call.answer(
+        transcript(("user", START), ("agent", ASK_NAME), ("user", wait)), elevenlabs.send_response, "conv_1"
+    )
+
+    # They hang up: our last line asks nothing, and the screening is open. No ElevenLabs history: the call is kept as
+    # stored.
+    assert isinstance(service.channel, WebChatChannel)
+    with service.channel.subscribe(candidate) as events:
+        await call.end(None, cast(AsyncElevenLabs, None))
+        while True:
+            event = await asyncio.wait_for(events.get(), timeout=5)
+            if isinstance(event, ChatMessage) and event.text == pick_up:
+                break
+    assert (await chat(service, candidate))[-2:] == [
+        ("assistant", "Claro, Ana. Te espero.", False),
+        ("assistant", pick_up, False),
+    ]
+
+
 async def test_a_cut_reply_is_stored_as_heard_and_an_unplayed_one_is_removed(
     services: list[ScreeningService], database: str
 ) -> None:
@@ -326,7 +399,7 @@ async def test_an_interrupted_turn_stores_nothing_even_after_speaking_and_the_ne
     services: list[ScreeningService], database: str, capfire: CaptureLogfire, cut_while: str
 ) -> None:
     question = "Espera, una pregunta."
-    answer = "Claro, dime."
+    answer = "Claro, ¿qué quieres saber?"
     model = Model({START: ASK_NAME, question: answer}, hold={START})
     service, candidate, call = await call_on(services, database, model)
     speaking = ElevenLabs(stall=cut_while == "sending")
@@ -397,7 +470,11 @@ async def test_after_the_call_the_record_matches_what_was_heard(
 ) -> None:
     stop = "No me interesa."
     goodbye = "Entendido, no te escribiremos más. Gracias por tu tiempo."
-    model = Model({START: ASK_NAME, NAME: ASK_LICENSE, stop: goodbye}, hold={stop})
+    model = Model(
+        {START: ASK_NAME, NAME: ASK_LICENSE, stop: goodbye},
+        hold={stop},
+        tools={stop: ("end_conversation", {"reason": "not_interested"})},
+    )
     service, candidate, call = await call_on(services, database, model)
     elevenlabs = ElevenLabs()
 

@@ -212,7 +212,7 @@ The chat has a call button: the candidate can do the screening by voice, with th
 
 - **ElevenLabs Speech Engine** runs speech-to-text, turn-taking, interruptions and speech. For each turn of the candidate's, it sends the call's transcript to our WebSocket (`/api/voice/ws`), and our reply streams back to be spoken as it's written.
 - **The browser** gets a WebRTC token from `/api/voice/chat/{token}/session`, plus a single-use ticket that ElevenLabs hands back to us, so the chat token never leaves us. ElevenLabs proves it's ElevenLabs with a JWT signed with our API key.
-- **The instructions.** A voice turn reads the text chat's instructions, then `prompts/spoken.md` (speech recognition in, everything spoken out) and `prompts/live_call.md` (the acknowledgement before a tool call, cut lines). A text turn reads exactly what the evals validated. The context block says `channel: voice`.
+- **The instructions.** A voice turn reads the text chat's instructions, then `prompts/spoken.md` (speech recognition in, everything spoken out) and `prompts/live_call.md` (no line before a tool call, the read-back after a save, cut lines). A text turn reads exactly what the evals validated. The context block says `channel: voice`.
 - **The engines are code:** `python -m screening.voice wss://HOST/api/voice/ws` creates or updates one per language, with speech-recognition keywords (the places in our service areas and the delivery platforms), the voice, the language, ElevenLabs' number normaliser, no recording, and 1-day retention.
 - **The chat shows the call** (🎙️ on its lines). A call's turn and a chat turn take the conversation's lock, so they never overlap.
 
@@ -222,7 +222,7 @@ An answer is only ever read against a question the candidate heard. ElevenLabs' 
 
 - **A turn cut off** (the candidate spoke again, or hung up) is discarded whole, like a failed text turn. The next turn reads the same words from the transcript, and the context block shows that nothing was saved. So nothing half-heard becomes a saved answer, and the next turn starts at once.
 - **A stored turn whose reply was cut while it played** is corrected to the part heard, in the chat and in the model's history. If none of it was played, it's removed.
-- **When the call ends,** whatever the candidate said that no turn answered gets a normal text turn, whose reply lands in the chat. Then the record is checked against ElevenLabs' history of the call, and the call is deleted there.
+- **When the call ends,** whatever the candidate said that no turn answered gets a normal text turn, whose reply lands in the chat. Then the record is checked against ElevenLabs' history of the call, and the call is deleted there. Last, if the screening is open and our last line in the call asks nothing (cut off, or a wait), the chat picks up: a text turn with no new messages, which asks what's next.
 - **ElevenLabs sends the same words again at times,** punctuated anew, or an older transcript after a newer one, even one with an earlier reading of the candidate's words ("Diego Riconi" after "Diego Rigoni"). These run no turn. An older transcript is told by its event id, which the SDK keeps in a private attribute (`_current_event_id`): a test fails if that changes.
 
 ### Latency
@@ -238,12 +238,14 @@ Measured with `evals.voice_driver`: a simulated candidate speaks through ElevenL
 
 \* ElevenLabs sent the transcript again 1.7 s late, with a word added; our share of that turn was 0.96 s.
 
-Where the time goes, at the median: ElevenLabs' speech recognition and turn detection take about 0.4 s, our first text comes 0.9 s later, and speech starts about 0.3 s after that. A tool turn waits about another 1.45 s, because its acknowledgement is held (below). Before the refactor that discards cut turns, 20 turns gave the same picture: a 2.71 s median, with nothing over 4 s.
+Where the time goes, at the median: ElevenLabs' speech recognition and turn detection take about 0.4 s, our first text comes 0.9 s later, and speech starts about 0.3 s after that. A tool turn waits about another 1.45 s, for the tool and a second model request (below). Before the refactor that discards cut turns, 20 turns gave the same picture: a 2.71 s median, with nothing over 4 s.
 
-**Why the acknowledgement doesn't start the speech sooner here.**
-- **What it is.** On a turn that calls a tool, the model writes a short acknowledgement before the tool call: "Entendido, fines de semana." ("Got it, weekends."). This is the common practice for voice agents. With a TTS that can flush, it would start the speech about a second earlier, while the tool runs and a second request writes the rest.
-- **Why it's held.** ElevenLabs' TTS starts generating once enough text is buffered, or on a flush. The TTS WebSocket's default `chunk_length_schedule` starts at 120 characters. Speech Engine's `agent_response` (content and `is_final`) exposes neither the schedule nor a flush. Measured: acknowledgements of up to 53 characters waited for the rest of the reply, and those of 57 or more played at once. A prompt that asked for a whole-sentence read-back got 2 of 6 that long, and tool turns didn't get faster (median 2.71 s against 2.80 s), so it wasn't kept.
-- **The floor.** So the acknowledgement is spoken together with the rest, and a tool turn's two model requests set the floor. terra is the fastest model that passed the license gate: request p50 1.3 s, against 2.0 s for Gemini 3.8 Flash on the Gemini API.
+**No line before a tool call.**
+- **The common pattern doesn't help here.** Voice agents often say a short line while a tool runs ("Entendido, fines de semana.", "Got it, weekends."). Speech Engine holds it: its TTS starts at about 120 buffered characters or on a flush, and `agent_response` exposes neither. Measured: lines of up to 53 characters waited for the rest of the reply.
+- **And it caused two failures** (terra, history built as in a call): the model said the line and stopped, as in prod ("Got it, afternoons." and nothing more): 10 of 530 call turns. Or it wrote the tool call as text after the line, read aloud, and nothing was saved: 17 of 942. Without the line: no dead end in 577 call turns, no JSON in 706.
+- **What ships.** The model calls the tool first. The reply after it says back, in a few words, what speech recognition can get wrong (a name, a place, a number, a date), so the candidate can correct a mishearing, then asks what's next. A yes or no gets a short acknowledgement or none, and a postal code is read back and confirmed before it's saved.
+- **The safety net stays:** a turn that asks nothing and calls no tool gets one more request (`leaves_something_to_answer`, an output validator). Without the line it fired only on a candidate's "wait" (3 of 126 call turns).
+- **The floor.** A tool turn's two model requests set it. terra is the fastest model that passed the license gate: request p50 1.3 s, against 2.0 s for Gemini 3.8 Flash on the Gemini API.
 - **Accepted for the demo:** a median under 3 s, and nothing over 4 s on our side.
 
 ### Limits
@@ -251,13 +253,14 @@ Where the time goes, at the median: ElevenLabs' speech recognition and turn dete
 - **A voice turn that fails** (every model down, or out of time) says the chat's "Dame un momento, por favor." ("Give me a moment, please."). The candidate's next words get a turn that answers both.
 - **Typing in the chat during a call** works, but the turns take turns.
 - **Tickets and locks live in memory,** which fits the deployment's single instance.
+- **Nothing is said while a tool runs** (about 1.45 s at the median, above). The next step for production is a filler made by code or by the voice platform when the model is slow, so the model calls the tool first.
 - **An FAQ topic is loaded again for each question about it in a call.** The agent loads the job's facts by topic (`load_capability`) when a question needs one. A call's history is rebuilt from ElevenLabs' transcript on every turn, and the transcript holds what was said, not tool calls. So a second question on a topic the call already loaded loads it again: one more request (terra's median is 1.3 s). Checked with terra, 3 of 3. A topic loaded in the text chat before the call stays loaded.
 
 ## Evals
 
 The process design is enforced by evals, not unit tests. `backend/evals/` (Pydantic Evals) runs synthetic candidates from `cases.yaml`, in both countries and in Spanish and English, against the real agent. A simulated candidate (an LLM playing the persona) chats with the agent in memory until the conversation ends, and labels what each agent message asked for; then the summary agent writes the recruiter summary. Then:
 
-- **Deterministic checks** carry the process rules: the outcome and review reasons, the saved answers, knockouts asked first, nothing asked again, at most two tries per field, message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent as a message on its own, the language saved at the end, the country's regional terms and gender-neutral wording. They decide the ranking.
+- **Deterministic checks** carry the process rules: the outcome and review reasons, the saved answers, knockouts asked first, nothing asked again, at most two tries per field, message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent as a message on its own, a screening left open ending on a question, a call's replies never opening with the same formula twice in a row, a request to wait answered without a question, the language saved at the end, the country's regional terms and gender-neutral wording. They decide the ranking.
 - **An LLM judge** (OpenAI `gpt-6-luna`) scores tone, naturalness, language quality (including whether each reply follows the candidate's language) and the recruiter summary (nothing in it missing from the transcript or contradicting it). Its scores on OpenAI rows are marked: judges tend to favour their own family's style.
 - **Per config:** the thinking config the provider actually receives, p50/p95 latency per turn, cost per completed screening (genai-prices), the share of input tokens read from the provider's prompt cache, cache collapses flagged by PydanticAI's instrumentation, and which model answered each turn.
 - **Scripted cases** replay an observed failure: fixed candidate messages instead of the simulator, checked on the state after the last message. They're cheap to rerun many times and their input never changes. The simulated set covers whole conversations and runs before a prompt change is committed.

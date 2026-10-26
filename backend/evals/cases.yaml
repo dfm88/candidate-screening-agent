@@ -753,6 +753,120 @@ cases:
         availability: [weekends]
         schedule: [afternoon]
 
+  # The end of a call (2026-10-26): the candidate asks us to wait, then hangs up. Our last line in the call asks
+  # nothing, so the chat mustn't sit silent: the screening is open, and the candidate needs something to answer. The
+  # empty turn is the call ending there.
+  - name: scripted_es_call_ends_on_a_wait_voice
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Ana Torres Lozano
+      application_language: es
+      now: 2026-10-26T16:00:00Z
+      profile: |
+        Ana starts in the chat, then calls: she confirms her name and her license, asks us to wait for a moment, and
+        hangs up.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["Sí, soy yo."]
+          provides: [full_name]
+          medium: voice
+        - messages: ["Sí, tengo el carnet B en vigor."]
+          provides: [license]
+          medium: voice
+        - messages: ["Espera un momento, que me están llamando por la otra línea."]
+          medium: voice
+          asks_to_wait: true
+        - messages: []
+    metadata:
+      tags: [es, scripted, voice]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Ana Torres Lozano
+        license: "yes"
+
+  # Sarah, Mon 26 am (prod): the chat up to the postal code question, then a call in which she asks us to wait while
+  # she checks her postcode, and hangs up. The reply asked the question again ("Take your time. What's your postal
+  # code…?"); a person says they'll wait, and stops. If the call ends there, the chat picks up with the question.
+  - name: scripted_en_call_wait_for_postcode_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Sarah Mitchell
+      application_language: en
+      now: 2026-10-26T07:54:00Z
+      profile: |
+        Sarah starts in the chat, confirms her name and her license, then calls and asks us to wait while she checks
+        her postcode, and hangs up.
+      script:
+        - messages: ["Start"]
+        - messages: ["Yes, that's my name"]
+          provides: [full_name]
+        - messages: ["Yes, I have a licence."]
+          provides: [license]
+        - messages: ["Hold on. Uh, let me check my postcode. Uh, wait a second."]
+          medium: voice
+          asks_to_wait: true
+        - messages: []
+    metadata:
+      tags: [es, scripted, voice]
+      status: in_progress
+      final_language: en
+      # The license isn't checked: "Yes, I have a licence." may get a save, or a question whether it's valid in Spain.
+      answers:
+        full_name: Sarah Mitchell
+
+  # Daniel, Mon 26 am (prod): a whole screening in a call, in English. Every reply after a save opened with "I
+  # understood …" ("I understood part-time, mostly weekends.", "I understood afternoons."): a person on the phone
+  # says back what speech recognition can get wrong, briefly, and varies how they start.
+  - name: scripted_en_call_full_screening_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Daniel Walsh
+      application_language: en
+      now: 2026-10-26T07:51:00Z
+      medium: voice
+      profile: |
+        Daniel, in Gràcia, Barcelona, with a Spanish license, does the whole screening in a call and asks about pay
+        on the way.
+      script:
+        - messages: ["Yes."]
+        - messages: ["Yes, that's me."]
+          provides: [full_name]
+        - messages: ["Yes, I have a Spanish driving licence."]
+          provides: [license]
+        - messages: ["I live in Gràcia, postcode 08012."]
+          provides: [service_area]
+        # Not in the call: it confirms the code whether it was read back before the save, as spoken.md asks, or after.
+        - messages: ["Yes, that's right."]
+          provides: [service_area]
+        - messages: ["Part-time, mostly weekends."]
+          provides: [availability]
+        - messages: ["In the afternoon."]
+          provides: [schedule]
+        - messages: ["By the way, how much does it pay?"]
+        - messages: ["Two years with Glovo and Uber Eats."]
+          provides: [experience]
+        - messages: ["Next Monday."]
+          provides: [start_date]
+        - messages: ["November 2nd."]
+          provides: [start_date]
+        - messages: ["Yes, that's all correct."]
+    metadata:
+      tags: [es, scripted, voice, faq]
+      status: completed
+      outcome: qualified
+      final_language: en
+      topics: [pay]
+      answers:
+        full_name: Daniel Walsh
+        license: "yes"
+        location_id: es-bcn-gracia
+        availability: [part_time, weekends]
+        schedule: [afternoon]
+        experience_years: 2
+        platforms: [Glovo, Uber Eats]
+        start_date: 2026-11-02
+
   # Diego, Sun 25 pm: the mid-chat reminder at the license ("Nos quedamos en el carnet de conducir. ¿Seguimos?") is
   # answered with "sí". That agrees to go on; it isn't a license, which is the knockout. Expected: the license stays
   # unknown and the agent asks the license question.

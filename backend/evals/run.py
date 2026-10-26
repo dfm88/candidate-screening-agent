@@ -36,11 +36,14 @@ from evals.evaluators import (
     GroundedAnswers,
     MessageShape,
     NoStandaloneAcknowledgement,
+    OpenEndsAsking,
     OutcomeMatches,
     SavedAnswers,
     SavedLanguage,
     SpanishWording,
     TopicsLoaded,
+    VariedOpenings,
+    WaitHonoured,
 )
 from evals.task import CONFIG, Expected, Persona, ScreeningRun, make_task
 from screening.agent import MODEL_SETTINGS, build_model, model_from_string, prompt_version, screening_agent
@@ -59,12 +62,14 @@ ASSERTIONS = [
     "no_reask",
     "two_tries_max",
     "no_standalone_ack",
+    "open_ends_asking",
+    "wait_honoured",
     "faq_topics",
     "saved_language",
     "regional_terms",
     "gender_neutral",
 ]
-SCORES = ["saved_answers", "message_shape"]
+SCORES = ["saved_answers", "message_shape", "varied_openings"]
 JUDGE_SCORES = [*RUBRICS, "saved_values", "faq_answers", "summary", "decision"]
 
 
@@ -96,6 +101,9 @@ def load_dataset(case_names: list[str], judge: str) -> Dataset[Persona, Screenin
         Asking(),
         MessageShape(),
         NoStandaloneAcknowledgement(),
+        OpenEndsAsking(),
+        VariedOpenings(),
+        WaitHonoured(),
         SavedLanguage(),
         SpanishWording(),
         CacheHealth(),
@@ -215,7 +223,8 @@ async def main(args: argparse.Namespace) -> None:
     version = prompt_version(CONFIG, model_settings)
     dataset = load_dataset(args.case, args.judge)
     simulator_model = model_from_string(args.simulator, settings)
-    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
+    started = datetime.now(UTC)
+    stamp = started.strftime("%Y%m%d-%H%M")
     (RESULTS / "transcripts").mkdir(parents=True, exist_ok=True)
     header = (
         f"## {stamp} · prompt {version} · {len(dataset.cases)} cases × {args.repeat}\n\n"
@@ -241,8 +250,10 @@ async def main(args: argparse.Namespace) -> None:
                 metadata={"prompt_version": version, "simulator": args.simulator, "judge": args.judge},
             )
         report.print(include_reasons=True, include_durations=False)
-        # The settings are in the name, so two configs of one model started in the same minute get separate files.
-        write_transcripts(report, RESULTS / "transcripts" / f"{stamp}-{re.sub(r'[^\w.-]+', '_', name)}.md")
+        # The settings are in the name, so two configs of one model get separate files, and the seconds keep two runs
+        # started in the same minute apart (one overwrote the other's transcripts).
+        file = f"{started:%Y%m%d-%H%M%S}-{re.sub(r'[^\w.-]+', '_', name)}.md"
+        write_transcripts(report, RESULTS / "transcripts" / file)
         judge_family = args.judge.partition(":")[0]
         row = arena_row(
             report,
