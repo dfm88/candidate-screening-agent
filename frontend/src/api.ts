@@ -41,13 +41,16 @@ export interface ChatSession {
   status: Status
   // A live voice call is set up for the chat's current language.
   voice: boolean
+  // Voice notes are set up: the chat has a mic button, and each of our messages a play button.
+  voice_notes: boolean
 }
 
 export interface ChatMessage {
   id: number
   author: 'candidate' | 'assistant'
-  // voice: said in a call, the candidate's words as transcribed and ours as heard.
-  kind: 'text' | 'template' | 'voice'
+  // voice: said in a call, the candidate's words as transcribed and ours as heard. voice_note: the candidate's voice
+  // note, as transcribed.
+  kind: 'text' | 'template' | 'voice' | 'voice_note'
   text: string
   // Our reply in a call, cut off: the text is the part the candidate heard.
   interrupted: boolean
@@ -180,8 +183,8 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { 'content-type': 'application/json' } })
+async function request<T>(path: string, init?: RequestInit, contentType = 'application/json'): Promise<T> {
+  const response = await fetch(path, { ...init, headers: { 'content-type': contentType } })
   const body = await response.json().catch(() => null)
   if (!response.ok) {
     throw new ApiError(response.status, typeof body?.detail === 'string' ? body.detail : response.statusText)
@@ -202,6 +205,15 @@ export const api = {
   eventsUrl: (token: string) => `/api/chat/${token}/events`,
   // A live voice call: the ElevenLabs token, and the ticket that tells our server which chat it is.
   voiceSession: (token: string) => request<VoiceSession>(`/api/voice/chat/${token}/session`, { method: 'POST' }),
+  // A voice note, as the browser recorded it: transcribed, then answered like a typed message.
+  voiceNote: (token: string, audio: Blob, clientId: string) =>
+    request<{ id: number }>(
+      `/api/voice/chat/${token}/notes?client_id=${clientId}`,
+      { method: 'POST', body: audio },
+      audio.type || 'application/octet-stream',
+    ),
+  // One of our messages, spoken: made from its text each time it's played.
+  speechUrl: (token: string, messageId: number) => `/api/voice/chat/${token}/messages/${messageId}/speech`,
   // The recruiter tool: the login sets an HttpOnly session cookie, which fetch sends on same-origin requests.
   login: (name: string, password: string) =>
     request<Recruiter>('/api/recruiter/login', { method: 'POST', body: JSON.stringify({ name, password }) }),

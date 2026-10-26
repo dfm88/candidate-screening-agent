@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from screening.agent import (
+    Medium,
     TurnResult,
     call_history,
     history_from_turns,
@@ -387,8 +388,11 @@ class ScreeningService:
         await self.channel.publish(candidate.id, [ChatMessage.model_validate(message) for message in messages])
         return candidate
 
-    async def receive(self, candidate: Candidate, text: str, client_id: str) -> ChatMessage:
-        """Store a candidate message, echo it, and wake the conversation's worker. A retried send is stored once."""
+    async def receive(
+        self, candidate: Candidate, text: str, client_id: str, kind: MessageKind = MessageKind.TEXT
+    ) -> ChatMessage:
+        """Store a candidate message (typed, or a voice note as transcribed), echo it, and wake the conversation's
+        worker. A retried send is stored once."""
         now = datetime.now(UTC)
         async with self.sessionmaker() as session:
             same = select(Message).where(Message.candidate_id == candidate.id, Message.client_id == client_id)
@@ -397,7 +401,7 @@ class ScreeningService:
                 message = Message(
                     candidate_id=candidate.id,
                     author=Author.CANDIDATE,
-                    kind=MessageKind.TEXT,
+                    kind=kind,
                     text=text,
                     client_id=client_id,
                 )
@@ -556,6 +560,9 @@ class ScreeningService:
 
                 await self.channel.publish(candidate_id, [Typing(active=True)])
                 state = ScreeningState.model_validate(candidate.state)
+                # A voice note among them: the turn reads the voice rules, and its reply is played.
+                voice_note = any(message.kind is MessageKind.VOICE_NOTE for message in pending)
+                medium = Medium.VOICE_NOTE if voice_note else Medium.TEXT
                 now = datetime.now(UTC)
                 started = time.perf_counter()
                 try:
@@ -576,6 +583,7 @@ class ScreeningService:
                         usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
                         # Read from its own column on every turn, so a decision made since the last one counts.
                         decision=candidate.decided_outcome,
+                        medium=medium,
                     )
                     async with self.sessionmaker() as session, session.begin():
                         turn = await self._record_turn(session, candidate, result, now, started)
@@ -742,6 +750,15 @@ class ScreeningService:
             self._background.add(summary)
             summary.add_done_callback(self._background.discard)
         yield VoiceTurn(turn_id=turn.id, requests=result.usage.requests)
+
+    async def our_message(self, candidate_id: uuid.UUID, message_id: int) -> Message | None:
+        """One of our messages in the candidate's chat, to be spoken."""
+        async with self.sessionmaker() as session:
+            return await session.scalar(
+                select(Message).where(
+                    Message.id == message_id, Message.candidate_id == candidate_id, Message.author == Author.ASSISTANT
+                )
+            )
 
     async def call_record(self, candidate_id: uuid.UUID, call_id: str) -> dict[int, StoredLine]:
         """What a call has stored so far, by position in its transcript."""

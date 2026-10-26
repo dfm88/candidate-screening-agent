@@ -87,6 +87,8 @@ class ChatSession(BaseModel):
     status: Status
     # A live voice call is set up for the chat's current language.
     voice: bool
+    # Voice notes are set up: the chat has a mic button, and each of our messages a play button.
+    voice_notes: bool
 
 
 class CandidateMessage(BaseModel):
@@ -110,6 +112,8 @@ class MessageKind(StrEnum):
     TEMPLATE = "template"
     # Said in a live voice call: the candidate's words as transcribed, ours as the candidate heard them.
     VOICE = "voice"
+    # The candidate's voice note in the chat, as transcribed. The audio is kept nowhere.
+    VOICE_NOTE = "voice_note"
 
 
 class ChatMessage(BaseModel):

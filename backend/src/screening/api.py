@@ -136,6 +136,7 @@ async def chat_session(candidate: ChatCandidate, service: Service) -> ChatSessio
         status=candidate.status,
         voice=service.settings.elevenlabs_api_key is not None
         and ScreeningState.model_validate(candidate.state).language in service.settings.speech_engines,
+        voice_notes=service.settings.elevenlabs_api_key is not None,
     )
 
 

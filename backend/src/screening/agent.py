@@ -1,6 +1,6 @@
 """The two agents. The screening agent holds the conversation, with tools, steered by prompts/screening_agent.md
-(on a voice turn, followed by prompts/spoken.md and prompts/live_call.md); the summary agent writes the recruiter's
-caveats and notes once the screening ends (prompts/summary_agent.md).
+(on a spoken turn, followed by prompts/spoken.md, and in a live call by prompts/live_call.md too); the summary agent
+writes the recruiter's caveats and notes once the screening ends (prompts/summary_agent.md).
 
 The conversation lives in the prompt and is verified by evals. The tools hand the facts we own to domain.py:
 service areas, dates, the saved state and the outcome.
@@ -74,11 +74,13 @@ LANGUAGE_NAMES = {Language.ES: "Spanish", Language.EN: "English"}
 
 
 class Medium(StrEnum):
-    """How the candidate talks to us in a turn: typing in the chat, or in a live voice call. The context block names
-    it as the turn's channel, and a voice turn's instructions end with the voice rules."""
+    """How the candidate talks to us in a turn: typing in the chat, in a live voice call, or with voice notes in the
+    chat. The context block names it as the turn's channel; a spoken turn's instructions end with the voice rules."""
 
     TEXT = "text"
     VOICE = "voice"
+    # The turn's messages include a voice note: its words come from speech recognition, and the reply is played.
+    VOICE_NOTE = "voice_note"
 
 
 @dataclass
@@ -120,11 +122,14 @@ def prompt_version(config: ClientConfig, model_settings: ModelSettings = MODEL_S
 
 @screening_agent.instructions
 def instructions(ctx: RunContext[Deps]) -> str:
-    """A text turn reads exactly the instructions the evals validated. A voice turn reads the same, then the voice
-    rules: at the end, so the shared part stays a prefix the provider's prompt cache matches for both."""
+    """A text turn reads exactly the instructions the evals validated. A spoken turn reads the same, then the voice
+    rules (a live call's too, in a call): at the end, so the shared part stays a prefix the provider's prompt cache
+    matches for all of them."""
     rendered = render_instructions(ctx.deps.config)
     if ctx.deps.medium is Medium.VOICE:
         return f"{rendered}\n{SPOKEN}\n{LIVE_CALL}"
+    if ctx.deps.medium is Medium.VOICE_NOTE:
+        return f"{rendered}\n{SPOKEN}"
     return rendered
 
 
@@ -359,6 +364,9 @@ def turn_result(result: AgentRunResult[str], deps: Deps) -> TurnResult:
             if isinstance(part, TextPart) and part.content.strip()
         )
         reply = [spoken] if spoken else []
+    elif deps.medium is Medium.VOICE_NOTE:
+        # One bubble, so it plays as one audio.
+        reply = [result.output.strip()] if result.output.strip() else []
     else:
         reply = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", result.output) if paragraph.strip()]
     return TurnResult(reply=reply, state=deps.state, messages=messages, usage=result.usage)

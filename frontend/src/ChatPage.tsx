@@ -1,6 +1,6 @@
 import type { Status as CallStatus, VoiceConversation } from '@elevenlabs/client'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router'
 import {
   api,
@@ -29,6 +29,12 @@ const COPY = {
     hangUp: 'Colgar',
     callFailed: 'No se pudo llamar. Permite el micrófono e inténtalo de nuevo.',
     interrupted: 'interrumpido',
+    record: 'Grabar un audio',
+    cancel: 'Cancelar',
+    notHeard: 'No se pudo entender el audio. Inténtalo de nuevo o escríbelo.',
+    micDenied: 'Permite el micrófono para grabar un audio.',
+    listen: 'Escuchar',
+    stop: 'Parar',
   },
   en: {
     virtual: (client: string) => `${client}'s virtual assistant`,
@@ -45,14 +51,27 @@ const COPY = {
     hangUp: 'Hang up',
     callFailed: "Couldn't call. Allow the microphone and try again.",
     interrupted: 'cut off',
+    record: 'Record a voice note',
+    cancel: 'Cancel',
+    notHeard: "Couldn't hear that. Try again or type it.",
+    micDenied: 'Allow the microphone to record a voice note.',
+    listen: 'Listen',
+    stop: 'Stop',
   },
 } as const
+
+// A note stops recording here; the server caps the upload's size too.
+const MAX_NOTE_SECONDS = 60
+// 10 ms of silence, played on the mic tap: iOS lets a page play sound only on an audio element a tap has played.
+const SILENCE =
+  'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=='
 
 // A message the candidate sent that the server hasn't echoed yet.
 interface Outgoing {
   clientId: string
   text: string
   failed: boolean
+  note?: boolean
 }
 
 /** The chat's events: every stored message (replayed on reconnect), the typing indicator and the status. */
@@ -97,7 +116,34 @@ export default function ChatPage() {
   const { messages, typing, status, connected } = useChatEvents(token, session.isSuccess)
   const [outgoing, setOutgoing] = useState<Outgoing[]>([])
   const [draft, setDraft] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
+  // One audio element plays every message, so the one the mic tap unlocked on iOS also plays the reply to the note.
+  const player = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState<number | null>(null)
+  // The candidate's last voice note, until our reply to it arrives and plays by itself.
+  const replyTo = useRef<number | null>(null)
+
+  const speak = useCallback(
+    (messageId: number) => {
+      const audio = player.current
+      if (!audio) return
+      audio.src = api.speechUrl(token, messageId)
+      setPlaying(messageId)
+      // A browser that wants a tap first refuses: the play button is there.
+      audio.play().catch(() => setPlaying(null))
+    },
+    [token],
+  )
+
+  useEffect(() => {
+    const after = replyTo.current
+    const reply = messages.find((message) => after !== null && message.author === 'assistant' && message.id > after)
+    if (reply) {
+      replyTo.current = null
+      speak(reply.id)
+    }
+  }, [messages, speak])
 
   const echoed = new Set(messages.map((message) => message.client_id))
   const waiting = outgoing.filter((message) => !echoed.has(message.clientId))
@@ -119,11 +165,43 @@ export default function ChatPage() {
   const quickReplies = !closed && last?.author === 'assistant' && waiting.length === 0 ? last.quick_replies : []
 
   async function send(text: string, clientId: string = crypto.randomUUID()) {
+    setNotice(null)
     setOutgoing((current) => [...current.filter((m) => m.clientId !== clientId), { clientId, text, failed: false }])
     try {
       await api.send(token, text, clientId)
     } catch {
       setOutgoing((current) => current.map((m) => (m.clientId === clientId ? { ...m, failed: true } : m)))
+    }
+  }
+
+  // On the mic tap, before anything is awaited. A new note also means the last one's reply needn't play by itself.
+  function startNote() {
+    setNotice(null)
+    replyTo.current = null
+    const audio = player.current
+    if (!audio) return
+    audio.src = SILENCE
+    audio.play().catch(() => {})
+  }
+
+  async function sendNote(audio: Blob) {
+    const clientId = crypto.randomUUID()
+    setOutgoing((current) => [...current, { clientId, text: '…', failed: false, note: true }])
+    try {
+      replyTo.current = (await api.voiceNote(token, audio, clientId)).id
+    } catch {
+      // Nothing heard, or the transcription failed: nothing was stored, so there's nothing to retry but the note.
+      setOutgoing((current) => current.filter((m) => m.clientId !== clientId))
+      setNotice(copy.notHeard)
+    }
+  }
+
+  function toggleSpeech(messageId: number) {
+    if (playing === messageId) {
+      player.current?.pause()
+      setPlaying(null)
+    } else {
+      speak(messageId)
     }
   }
 
@@ -155,12 +233,24 @@ export default function ChatPage() {
         {messages.map((message) => (
           <Bubble key={message.id} own={message.author === 'candidate'} time={message.created_at}>
             {message.kind === 'voice' && <span aria-hidden>🎙️ </span>}
+            {message.kind === 'voice_note' && <span aria-hidden>🎤 </span>}
             {message.text}
             {message.interrupted && <span className="text-stone-400">… ({copy.interrupted})</span>}
+            {message.author === 'assistant' && session.data.voice_notes && (
+              <button
+                type="button"
+                onClick={() => toggleSpeech(message.id)}
+                aria-label={playing === message.id ? copy.stop : copy.listen}
+                className="ml-2 text-brand-700"
+              >
+                {playing === message.id ? '■' : '▶'}
+              </button>
+            )}
           </Bubble>
         ))}
         {waiting.map((message) => (
           <Bubble key={message.clientId} own pending={!message.failed}>
+            {message.note && <span aria-hidden>🎤 </span>}
             {message.text}
             {message.failed && (
               <button
@@ -194,11 +284,13 @@ export default function ChatPage() {
         )}
         <div ref={bottom} />
       </div>
+      <audio ref={player} onEnded={() => setPlaying(null)} onError={() => setPlaying(null)} />
+      {notice && <p className="bg-white px-4 pt-2 text-xs text-red-700">{notice}</p>}
 
       {closed ? (
         <p className="bg-white px-4 py-3 text-center text-sm text-stone-500">{copy.closed}</p>
       ) : (
-        <form onSubmit={submit} className="flex gap-2 bg-white px-3 py-2 shadow-[0_-1px_2px_rgb(0_0_0/0.05)]">
+        <form onSubmit={submit} className="relative flex gap-2 bg-white px-3 py-2 shadow-[0_-1px_2px_rgb(0_0_0/0.05)]">
           <input
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -207,6 +299,14 @@ export default function ChatPage() {
             aria-label={copy.placeholder}
             className="flex-1 rounded-full border border-stone-300 px-4 py-2 focus:border-brand-500 focus:outline-none"
           />
+          {session.data.voice_notes && (
+            <NoteRecorder
+              copy={copy}
+              onStart={startNote}
+              onNote={(audio) => void sendNote(audio)}
+              onDenied={() => setNotice(copy.micDenied)}
+            />
+          )}
           <button
             type="submit"
             disabled={!draft.trim()}
@@ -241,6 +341,97 @@ function Bubble({
           {new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       )}
+    </div>
+  )
+}
+
+// Tap to record, tap to send, or cancel, as on WhatsApp. MediaRecorder records whatever the browser does (webm/opus in
+// Chrome, mp4 in Safari), and the server takes either. While recording, it covers the input row.
+function NoteRecorder({
+  copy,
+  onStart,
+  onNote,
+  onDenied,
+}: {
+  copy: (typeof COPY)[Language]
+  onStart: () => void
+  onNote: (audio: Blob) => void
+  onDenied: () => void
+}) {
+  const recorder = useRef<MediaRecorder | null>(null)
+  const keep = useRef(false)
+  // While recording: the seconds so far.
+  const [seconds, setSeconds] = useState<number | null>(null)
+
+  // Leaving the page drops the note and frees the microphone.
+  useEffect(
+    () => () => {
+      keep.current = false
+      recorder.current?.stop()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (seconds === null) return
+    if (seconds >= MAX_NOTE_SECONDS) {
+      keep.current = true
+      recorder.current?.stop()
+      return
+    }
+    const timer = setTimeout(() => setSeconds(seconds + 1), 1000)
+    return () => clearTimeout(timer)
+  }, [seconds])
+
+  async function start() {
+    onStart()
+    let microphone: MediaStream | null = null
+    try {
+      microphone = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recording = new MediaRecorder(microphone)
+      const chunks: Blob[] = []
+      const tracks = microphone.getTracks()
+      recording.ondataavailable = (event) => chunks.push(event.data)
+      recording.onstop = () => {
+        tracks.forEach((track) => track.stop())
+        recorder.current = null
+        setSeconds(null)
+        if (keep.current) onNote(new Blob(chunks, { type: recording.mimeType }))
+      }
+      recording.start()
+      recorder.current = recording
+      setSeconds(0)
+    } catch {
+      microphone?.getTracks().forEach((track) => track.stop())
+      onDenied()
+    }
+  }
+
+  function stop(send: boolean) {
+    keep.current = send
+    recorder.current?.stop()
+  }
+
+  if (seconds === null) {
+    return (
+      <button type="button" onClick={() => void start()} aria-label={copy.record} title={copy.record} className="px-1 text-xl">
+        🎤
+      </button>
+    )
+  }
+  const clock = (total: number) => `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+  return (
+    // Above the Send button, whose disabled opacity paints it over anything not lifted.
+    <div className="absolute inset-0 z-10 flex items-center gap-3 bg-white px-3 py-2">
+      <button type="button" onClick={() => stop(false)} className="px-2 text-sm text-stone-600">
+        {copy.cancel}
+      </button>
+      <span className="flex-1 text-sm text-red-600 tabular-nums">
+        <span className="animate-pulse">●</span> {clock(seconds)} / {clock(MAX_NOTE_SECONDS)}
+      </span>
+      <button type="button" onClick={() => stop(true)} className="rounded-full bg-brand-600 px-4 py-2 font-semibold text-white">
+        {copy.send}
+      </button>
     </div>
   )
 }

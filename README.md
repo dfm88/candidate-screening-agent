@@ -186,6 +186,22 @@ print(asyncio.run(create_app().state.service.tick(datetime.now(UTC) + timedelta(
 
 Quiet hours are checked at the moved clock, too. From Madrid after 16:00, `5` lands past 21:00, and the tick sends nothing (`reminded=[]`). Pick hours that keep the moved clock between 09:00 and 21:00 at the vacancy's local time: at least 4 before the candidate's first reply, at least 2 mid-chat.
 
+## Voice notes
+
+Many drivers would rather talk than type, as they do on WhatsApp. The chat has a mic button next to Send: tap to record, tap to send, or cancel, with a timer. A note stops at 60 s. The button shows when `ELEVENLABS_API_KEY` is set.
+
+- **In.** The browser records in whatever format it records (webm/opus in Chrome, mp4 in Safari) and posts the note to `/api/voice/chat/{token}/notes`. The server caps it at 3 MB (Chrome records a 60 s note in about 0.5 MB). ElevenLabs' batch speech-to-text (`scribe_v2`) transcribes it, with the language detected and the same recognition terms as the call engines (the places in our service areas and the delivery platforms).
+- **The text chat's path.** The transcript is stored as the candidate's message, marked as a voice note (🎤 in the chat and in the recruiter's transcript, so the candidate sees what we understood). It goes through `receive()`: the same debounce, worker, turn and storage as typed text. A note that can't be transcribed, or has no words in it, stores nothing and runs no turn; the chat says it couldn't hear it, and to try again or type it.
+- **The turn knows.** When the pending messages include a voice note, the context block says `channel: voice_note`, and the instructions end with `prompts/spoken.md`. It says to ask again rather than guess at what may be misheard, above all on the knockouts, and that the reply is heard. `prompts/live_call.md` stays call-only. The reply is one bubble, so it plays as one audio.
+- **Out.** Every message of ours has a play button. `/api/voice/chat/{token}/messages/{id}/speech` streams speech made on demand from the stored text (`text_to_speech.stream`, with the language's voice from the client config and the call engines' model). Playing a message again makes it again, for a few credits. A reply to a voice note plays by itself when the browser allows it. iOS plays sound only on an audio element a tap has played, so the mic tap plays a moment of silence on the chat's one audio element, which then plays the reply.
+
+**Where the audio goes, and what's deleted.** Demo only, as for calls: ElevenLabs processes the audio in the US.
+- **The note:** held in memory while it's transcribed, then dropped. We keep no audio, as the process design says.
+- **Its transcript at ElevenLabs:** deleted as soon as it comes back (`speech_to_text.transcripts.delete`). Zero retention (`enable_logging=False`) is for enterprise customers only.
+- **The speech of our replies:** stored nowhere on our side. ElevenLabs keeps each generation in its history by default, our text included, and we don't delete them (zero retention is enterprise-only here too). For real candidates, that's a retention question for the client, like the region.
+
+**On WhatsApp (design only).** The same path takes the voice notes WhatsApp delivers as media: downloaded by their media id, transcribed, stored as a voice note, and answered by the same turn. The reply goes back as an audio message, made from its text the same way.
+
 ## Live voice calls
 
 The chat has a call button: the candidate can do the screening by voice, with the same agent, tools and state. It shows when `ELEVENLABS_API_KEY` is set and the chat's language has an engine (`SPEECH_ENGINES`).
@@ -306,7 +322,7 @@ The demo deployment logs full LLM prompts and completions to Logfire (`LLM_CONTE
 
 The demo also logs the ElevenLabs SDK's call events to Cloud Logging (`VOICE_DEBUG=true`): event ids, transcript lengths, ElevenLabs' conversation id and the replies we send whole, not the transcripts. Our per-turn line in Logfire (`voice turn at …`) carries the same conversation id, so a call that ElevenLabs ended on its side can be followed in both.
 
-Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD`, `LOGFIRE_TOKEN` and `ELEVENLABS_API_KEY` (voice calls) are optional; `SESSION_SECRET` and `MCP_TOKEN` (the [MCP server](#mcp-server-for-recruiters)'s URL) are generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`). Voice calls also need the demo's own engines: `ENVIRONMENT=demo uv run --env-file .env python -m screening.voice wss://SERVICE_URL/api/voice/ws` prints the `SPEECH_ENGINES` value for `deploy.env`.
+Secrets: `OPENAI_API_KEY` is required; `GOOGLE_API_KEY` (the fallback), `APPLY_ACCESS_CODE`, `RECRUITER_PASSWORD`, `LOGFIRE_TOKEN` and `ELEVENLABS_API_KEY` (voice notes and calls) are optional; `SESSION_SECRET` and `MCP_TOKEN` (the [MCP server](#mcp-server-for-recruiters)'s URL) are generated on the first deploy. `deploy.sh` stores each in Secret Manager (see `deploy.env.example`). Voice calls also need the demo's own engines: `ENVIRONMENT=demo uv run --env-file .env python -m screening.voice wss://SERVICE_URL/api/voice/ws` prints the `SPEECH_ENGINES` value for `deploy.env`.
 
 The service runs as exactly one always-on instance (`--min-instances 1 --max-instances 1 --no-cpu-throttling`), because the reminder loop, the SSE streams and the per-conversation locks live in that process.
 

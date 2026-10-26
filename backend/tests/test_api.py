@@ -1,5 +1,5 @@
-"""Through the HTTP API, with the LLM stubbed: apply → chat (SSE) → outcome, the failure path, and a recruiter
-deciding a review case.
+"""Through the HTTP API, with the LLM stubbed: apply → chat (SSE) → outcome, the failure path, a recruiter deciding a
+review case, and voice notes, with ElevenLabs stubbed too.
 
 Needs the compose Postgres (`docker compose up -d --wait db`). The app runs under uvicorn, because an event stream
 never ends and httpx's in-process transport only returns a response once it has.
@@ -10,19 +10,23 @@ import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import uvicorn
+from elevenlabs import SpeechToTextChunkResponseModel
 from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from screening.agent import screening_agent, summary_agent
-from screening.config import Settings
+from screening.agent import LIVE_CALL, SPOKEN, screening_agent, summary_agent
+from screening.config import DEFAULT_CLIENT_CONFIG, Language, Settings, load_client_config
 from screening.db import Candidate, Message, Turn, make_sessionmaker
 from screening.main import create_app
+from screening.voice import MAX_NOTE_BYTES
 
 pytestmark = pytest.mark.anyio
 
@@ -108,11 +112,46 @@ async def eventually(check: Callable[[], Awaitable[bool]]) -> None:
     raise AssertionError("timed out after 10 s")
 
 
+@dataclass
+class ElevenLabs:
+    """ElevenLabs' batch speech-to-text and text-to-speech, as the voice-note routes call them: every note is heard as
+    `heard`, and speech is the text's words."""
+
+    heard: str
+    transcribed: list[tuple[str, bytes, str]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    spoken: list[tuple[str, str]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.speech_to_text = SimpleNamespace(convert=self.convert, transcripts=SimpleNamespace(delete=self.delete))
+        self.text_to_speech = SimpleNamespace(stream=self.stream)
+
+    async def convert(self, *, file: tuple[str, bytes, str], **options: object) -> SpeechToTextChunkResponseModel:
+        self.transcribed.append(file)
+        return SpeechToTextChunkResponseModel(
+            language_code="spa",
+            language_probability=1,
+            text=self.heard,
+            words=[],
+            transcription_id=f"transcript-{len(self.transcribed)}",
+        )
+
+    async def delete(self, transcription_id: str) -> None:
+        self.deleted.append(transcription_id)
+
+    async def stream(self, voice_id: str, *, text: str, **options: object) -> AsyncIterator[bytes]:
+        self.spoken.append((voice_id, text))
+        for word in text.split():
+            yield f"{word} ".encode()
+
+
 @asynccontextmanager
-async def running_app(settings: Settings) -> AsyncGenerator[httpx.AsyncClient]:
-    server = uvicorn.Server(
-        uvicorn.Config(create_app(settings), port=0, log_level="warning", timeout_graceful_shutdown=1)
-    )
+async def running_app(settings: Settings, elevenlabs: ElevenLabs | None = None) -> AsyncGenerator[httpx.AsyncClient]:
+    app = create_app(settings)
+    if elevenlabs is not None:
+        # In place of the client the app builds from ELEVENLABS_API_KEY.
+        app.state.elevenlabs = elevenlabs
+    server = uvicorn.Server(uvicorn.Config(app, port=0, log_level="warning", timeout_graceful_shutdown=1))
     serving = asyncio.create_task(server.serve())
 
     async def started() -> bool:
@@ -337,3 +376,100 @@ async def test_a_recruiter_resolves_a_review_case(database_url: str) -> None:
 
             assert (await client.post("/api/recruiter/logout")).status_code == 204
             assert (await client.get("/api/recruiter/me")).status_code == 401
+
+
+async def stored(database_url: str, candidate_id: str) -> tuple[list[Message], list[Turn]]:
+    engine = create_async_engine(database_url)
+    async with make_sessionmaker(engine)() as session:
+        messages = (await session.scalars(select(Message).where(Message.candidate_id == candidate_id))).all()
+        turns = (await session.scalars(select(Turn).where(Turn.candidate_id == candidate_id))).all()
+    await engine.dispose()
+    return sorted(messages, key=lambda message: message.id), sorted(turns, key=lambda turn: turn.id)
+
+
+async def test_a_voice_note_is_answered_like_a_typed_message_with_the_spoken_rules(database_url: str) -> None:
+    read: list[tuple[str | None, str]] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = messages[-1].parts[-1]
+        assert isinstance(prompt, UserPromptPart)
+        read.append((info.instructions, str(prompt.content)))
+        return ModelResponse(parts=[TextPart("Entendido, Lucía.\n\n¿Tienes carnet de conducir en vigor?")])
+
+    elevenlabs = ElevenLabs(heard="Sí, soy Lucía Martín García.")
+    with screening_agent.override(model=FunctionModel(respond)):
+        async with running_app(settings_for(database_url), elevenlabs) as client:
+            created = (await client.post("/api/applications", json=application())).json()
+            token = created["chat_url"].removeprefix("/chat/")
+            sent = await client.post(
+                f"/api/voice/chat/{token}/notes?client_id=n1",
+                content=b"recorded audio",
+                headers={"content-type": "audio/webm;codecs=opus"},
+            )
+            assert sent.status_code == 202
+
+            async def answered() -> bool:
+                messages, _ = await stored(database_url, created["candidate_id"])
+                return messages[-1].author == "assistant" and messages[-1].kind == "text"
+
+            await eventually(answered)
+    messages, turns = await stored(database_url, created["candidate_id"])
+
+    # Transcribed as recorded, and the transcript deleted at ElevenLabs. Its words are the candidate's message.
+    assert elevenlabs.transcribed == [("note", b"recorded audio", "audio/webm;codecs=opus")]
+    assert elevenlabs.deleted == ["transcript-1"]
+    note = messages[1]
+    assert (note.id, note.kind, note.text, note.client_id) == (sent.json()["id"], "voice_note", elevenlabs.heard, "n1")
+    assert note.turn_id == turns[-1].id
+    # The turn knows it's a voice note: the spoken rules, without a live call's, and one bubble, played as one audio.
+    [(instructions, prompt)] = read
+    assert instructions is not None and instructions.endswith(SPOKEN.strip()) and LIVE_CALL.strip() not in instructions
+    assert "channel: voice_note" in prompt
+    assert [message.text for message in messages[2:]] == ["Entendido, Lucía.\n\n¿Tienes carnet de conducir en vigor?"]
+
+
+async def test_a_voice_note_with_no_words_or_too_big_runs_no_turn(database_url: str) -> None:
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise AssertionError("no turn should run")
+
+    elevenlabs = ElevenLabs(heard="  ")
+    with screening_agent.override(model=FunctionModel(respond)):
+        async with running_app(settings_for(database_url), elevenlabs) as client:
+            created = (await client.post("/api/applications", json=application())).json()
+            token = created["chat_url"].removeprefix("/chat/")
+            silent = await client.post(f"/api/voice/chat/{token}/notes?client_id=n1", content=b"silence")
+            too_big = await client.post(
+                f"/api/voice/chat/{token}/notes?client_id=n2", content=bytes(MAX_NOTE_BYTES + 1)
+            )
+            # Longer than the debounce: a turn would have started by now.
+            await asyncio.sleep(0.3)
+    messages, turns = await stored(database_url, created["candidate_id"])
+
+    assert (silent.status_code, too_big.status_code) == (422, 413)
+    # The silent note was transcribed, and its transcript deleted; the big one was never sent.
+    assert (len(elevenlabs.transcribed), elevenlabs.deleted) == (1, ["transcript-1"])
+    # Only the first message, from the template.
+    assert [(message.author, message.kind) for message in messages] == [("assistant", "template")]
+    assert len(turns) == 1
+
+
+async def test_our_messages_are_spoken_from_their_stored_text(database_url: str) -> None:
+    elevenlabs = ElevenLabs(heard="hola")
+    async with running_app(settings_for(database_url), elevenlabs) as client:
+        created = (await client.post("/api/applications", json=application())).json()
+        token = created["chat_url"].removeprefix("/chat/")
+        await client.post(f"/api/chat/{token}/messages", json={"text": "hola", "client_id": "m1"})
+        messages, _ = await stored(database_url, created["candidate_id"])
+        first, candidates = messages[0], messages[1]
+
+        spoken = await client.get(f"/api/voice/chat/{token}/messages/{first.id}/speech")
+        # Only our messages, and only in their own chat.
+        theirs = await client.get(f"/api/voice/chat/{token}/messages/{candidates.id}/speech")
+        other = (await client.post("/api/applications", json=application())).json()["chat_url"].removeprefix("/chat/")
+        elsewhere = await client.get(f"/api/voice/chat/{other}/messages/{first.id}/speech")
+
+    assert (spoken.status_code, spoken.headers["content-type"]) == (200, "audio/mpeg")
+    assert spoken.content == " ".join(first.text.split()).encode() + b" "
+    voice = load_client_config(DEFAULT_CLIENT_CONFIG).voices[Language.ES]
+    assert elevenlabs.spoken == [(voice, first.text)]
+    assert (theirs.status_code, elsewhere.status_code) == (404, 404)

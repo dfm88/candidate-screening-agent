@@ -1,6 +1,12 @@
-"""Live voice calls through ElevenLabs Speech Engine. ElevenLabs runs speech-to-text, turn-taking, interruptions and
-speech, and for each turn sends the call's transcript to our WebSocket; our turn answers it with the same agent, tools
-and state as the text chat (`ScreeningService.voice_turn`), and its reply streams back to be spoken.
+"""Voice, through ElevenLabs: live calls, and voice notes in the chat.
+
+Voice notes: a note is transcribed (batch speech-to-text), its transcript deleted at ElevenLabs, and its words go the
+text chat's way (`ScreeningService.receive`), marked as a voice note, so the turn reads the voice rules. We keep no
+audio. Each of our messages can be played: its speech is made from the stored text each time, and isn't stored.
+
+Live calls, through ElevenLabs Speech Engine. ElevenLabs runs speech-to-text, turn-taking, interruptions and speech,
+and for each turn sends the call's transcript to our WebSocket; our turn answers it with the same agent, tools and
+state as the text chat (`ScreeningService.voice_turn`), and its reply streams back to be spoken.
 
 The rule kept here: an answer is only ever read against a question the candidate heard. ElevenLabs' transcript cuts
 our lines to what was played, so the model reads the call from it, and the stored record is kept to it. A turn cut
@@ -24,6 +30,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from typing import Annotated
 
 import logfire
 from elevenlabs import (
@@ -32,14 +39,16 @@ from elevenlabs import (
     ConvAiDynamicVariable,
     PrivacyConfigInput,
     SpeechEngineConfig,
+    SpeechToTextChunkResponseModel,
     TtsConversationalConfigInput,
 )
 from elevenlabs.speech_engine import ConversationMessage, SpeechEngineSession, verify_speech_engine_jwt
-from fastapi import APIRouter, HTTPException, Request, WebSocket
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
+from fastapi.responses import StreamingResponse
 
 from screening.api import ChatCandidate, Service
 from screening.config import DEFAULT_CLIENT_CONFIG, SERVICE_NAME, ClientConfig, Language, Settings, load_client_config
-from screening.contract import Author, VoiceSession
+from screening.contract import Author, MessageAccepted, MessageKind, VoiceSession
 from screening.domain import ScreeningState, Status
 from screening.service import Correction, ScreeningService, StoredLine, VoiceTurn
 
@@ -51,6 +60,105 @@ TICKETS: dict[str, tuple[uuid.UUID, float]] = {}
 TICKET_SECONDS = 120
 # How long the end of a call waits for ElevenLabs to finish its history of it.
 HISTORY_WAIT_SECONDS = 60
+# The chat stops recording a note at 60 s: about 0.5 MB in Chrome, which records speech at about 65 kbps. The cap bounds
+# what we read and send to be transcribed, with room for a browser that records at a higher rate.
+MAX_NOTE_BYTES = 3_000_000
+# The model the call engines speak with (ElevenLabs' default for them), so a reply sounds the same in the chat.
+SPEECH_MODEL = "eleven_v4_turbo"
+
+
+def recognition_terms(config: ClientConfig) -> list[str]:
+    """What speech recognition is biased towards, in calls and voice notes: what candidates name that a general model
+    may not know, the places in our areas and the delivery platforms."""
+    return sorted({place for location in config.locations for place in location.places} | set(config.platforms))
+
+
+@router.post("/chat/{token}/notes", status_code=202)
+async def voice_note(
+    candidate: ChatCandidate,
+    service: Service,
+    request: Request,
+    client_id: Annotated[str, Query(min_length=1, max_length=64)],
+) -> MessageAccepted:
+    """A voice note from the chat, in whatever format the browser records: transcribed, and then answered as a typed
+    message would be. A note that can't be transcribed, or has no words in it, stores nothing and runs no turn."""
+    elevenlabs: AsyncElevenLabs | None = request.app.state.elevenlabs
+    if elevenlabs is None:
+        raise HTTPException(status_code=404, detail="Voice notes aren't set up.")
+    if candidate.status is Status.WITHDRAWN:
+        raise HTTPException(status_code=409, detail="This chat is closed.")
+    audio = bytearray()
+    async for chunk in request.stream():
+        audio += chunk
+        if len(audio) > MAX_NOTE_BYTES:
+            raise HTTPException(status_code=413, detail="This voice note is too long.")
+    try:
+        transcript = await elevenlabs.speech_to_text.convert(
+            model_id="scribe_v2",
+            file=("note", bytes(audio), request.headers.get("content-type", "application/octet-stream")),
+            # Encoded audio: ElevenLabs reads the container (webm in Chrome, mp4 in Safari).
+            file_format="other",
+            keyterms=recognition_terms(service.config),
+            # A tag like "(laughter)" would be stored as the candidate's words.
+            tag_audio_events=False,
+            timestamps_granularity="none",
+        )
+    except Exception:
+        logfire.exception("voice note not transcribed", candidate_id=candidate.id, size=len(audio))
+        raise HTTPException(status_code=502, detail="The voice note couldn't be transcribed.") from None
+    # Another shape comes only with a webhook or with one transcript per channel.
+    assert isinstance(transcript, SpeechToTextChunkResponseModel)
+    if transcript.transcription_id:
+        try:
+            # Its transcripts are kept at ElevenLabs until deleted; `enable_logging=False` is for enterprise customers.
+            await elevenlabs.speech_to_text.transcripts.delete(transcript.transcription_id)
+        except Exception:
+            logfire.exception("voice note transcript not deleted at ElevenLabs", candidate_id=candidate.id)
+    logfire.info(
+        "voice note: {seconds} s, {size} bytes, {language}",
+        seconds=transcript.audio_duration_secs,
+        size=len(audio),
+        language=transcript.language_code,
+        candidate_id=candidate.id,
+    )
+    if not transcript.text.strip():
+        raise HTTPException(status_code=422, detail="No words in the voice note.")
+    message = await service.receive(candidate, transcript.text.strip(), client_id, MessageKind.VOICE_NOTE)
+    return MessageAccepted(id=message.id)
+
+
+@router.get("/chat/{token}/messages/{message_id}/speech")
+async def speech(message_id: int, candidate: ChatCandidate, service: Service, request: Request) -> StreamingResponse:
+    """One of our messages, spoken in the voice of the chat's language: made from its stored text each time it's
+    played, and streamed as it's made. Nothing is stored on our side; ElevenLabs keeps each one in its history."""
+    elevenlabs: AsyncElevenLabs | None = request.app.state.elevenlabs
+    message = await service.our_message(candidate.id, message_id)
+    if elevenlabs is None or message is None:
+        raise HTTPException(status_code=404, detail="No such message.")
+    language = ScreeningState.model_validate(candidate.state).language
+    audio = elevenlabs.text_to_speech.stream(
+        service.config.voices[language],
+        text=message.text,
+        model_id=SPEECH_MODEL,
+        # The language numbers and dates are read in.
+        language_code=language.value,
+        output_format="mp3_44100_64",
+    )
+    try:
+        # Before the response starts, so a failure is an error status rather than a 200 cut short.
+        first = await anext(audio)
+    except Exception:
+        logfire.exception("speech failed", candidate_id=candidate.id, message_id=message_id)
+        raise HTTPException(status_code=502, detail="This message couldn't be spoken.") from None
+
+    async def chunks() -> AsyncIterator[bytes]:
+        # Closed here however the response ends, a listener gone included, so the generation stops with it.
+        async with aclosing(audio):
+            yield first
+            async for chunk in audio:
+                yield chunk
+
+    return StreamingResponse(chunks(), media_type="audio/mpeg")
 
 
 @router.post("/chat/{token}/session")
@@ -296,8 +404,6 @@ async def configure_engines(ws_url: str, settings: Settings, config: ClientConfi
     existing = {
         engine.name: engine.speech_engine_id for engine in (await elevenlabs.speech_engine.list()).speech_engines
     }
-    # Biases speech recognition towards what candidates name: places in our areas and delivery platforms.
-    keywords = sorted({place for location in config.locations for place in location.places} | set(config.platforms))
     engines: dict[Language, str] = {}
     for language, voice_id in config.voices.items():
         name = f"{SERVICE_NAME}-{settings.environment}-{language}"
@@ -311,7 +417,7 @@ async def configure_engines(ws_url: str, settings: Settings, config: ClientConfi
         await elevenlabs.speech_engine.update(
             engine_id,
             speech_engine=speech_engine,
-            asr=AsrConversationalConfig(keywords=keywords),
+            asr=AsrConversationalConfig(keywords=recognition_terms(config)),
             # ElevenLabs turns numbers and dates into words after we write them. The default, system_prompt, adds
             # instructions to the LLM's prompt instead, and with Speech Engine the LLM is ours.
             tts=TtsConversationalConfigInput(voice_id=voice_id, text_normalisation_type="elevenlabs"),
