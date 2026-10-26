@@ -1308,3 +1308,443 @@ Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means
 | responses by model | gpt-5.6-terra 39 |
 | topic loads (bounced) | documents_and_contract 2 (0) |
 
+## 20261025-2241 · prompt 77ec8f1d · 11 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 33 ok, 0 failed |
+| all checks | 0.95 |
+| outcome | 0.64 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | 0.33 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.88 |
+| message_shape | 0.99 |
+| tone | 0.97 * |
+| naturalness | 0.93 * |
+| language_quality | 1.00 * |
+| saved_values | 0.97 * |
+| faq_answers | 1.00 * |
+| summary | 0.83 * |
+| decision | – * |
+| p50 s | 2.3 |
+| p95 s | 4.2 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.7 |
+| requests per turn (mean, max) | 1.83, 3 |
+| USD / completed | 0.0268 |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 1,259,998 / 1,230,291 / 6,810 |
+| spend: agent / simulator USD | 0.402 / 0.028 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 296 |
+| topic loads (bounced) | where_we_hire 1 (0) |
+
+## 20261025-2249 · prompt 9e9fcd0d · 11 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 33 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 0.94 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 0.97 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.99 |
+| message_shape | 1.00 |
+| tone | 0.93 * |
+| naturalness | 0.84 * |
+| language_quality | 1.00 * |
+| saved_values | 0.94 * |
+| faq_answers | 1.00 * |
+| summary | 0.17 * |
+| decision | – * |
+| p50 s | 2.3 |
+| p95 s | 4.0 |
+| request p50 / p95 / p99 s | 1.2 / 1.9 / 3.0 |
+| requests per turn (mean, max) | 1.69, 3 |
+| USD / completed | 0.0487 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,212,426 / 1,181,261 / 6,342 |
+| spend: agent / simulator USD | 0.390 / 0.032 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 277 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2253 · prompt 6b9dccc4 · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 0.98 |
+| outcome | 0.94 |
+| grounded | 0.86 |
+| knockouts_first | 1.00 |
+| no_reask | 0.97 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.97 |
+| message_shape | 0.99 |
+| tone | 0.90 * |
+| naturalness | 0.75 * |
+| language_quality | 1.00 * |
+| saved_values | 0.97 * |
+| faq_answers | 1.00 * |
+| summary | 0.33 * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 3.5 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.8 |
+| requests per turn (mean, max) | 1.68, 3 |
+| USD / completed | 0.0553 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,379,568 / 1,345,574 / 7,392 |
+| spend: agent / simulator USD | 0.442 / 0.034 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 307 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2258 · prompt d15215ff · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 0.98 |
+| outcome | 0.92 |
+| grounded | 0.92 |
+| knockouts_first | 1.00 |
+| no_reask | 0.94 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.96 |
+| message_shape | 0.99 |
+| tone | 1.00 * |
+| naturalness | 0.90 * |
+| language_quality | 1.00 * |
+| saved_values | 0.97 * |
+| faq_answers | 0.50 * |
+| summary | 0.17 * |
+| decision | – * |
+| p50 s | 2.2 |
+| p95 s | 3.3 |
+| request p50 / p95 / p99 s | 1.1 / 1.7 / 2.7 |
+| requests per turn (mean, max) | 1.69, 3 |
+| USD / completed | 0.0493 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,384,250 / 1,349,070 / 7,224 |
+| spend: agent / simulator USD | 0.444 / 0.034 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 310 |
+| topic loads (bounced) | where_we_hire 4 (0) |
+
+## 20261025-2302 · prompt 4bed67a7 · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 0.92 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 0.95 |
+| message_shape | 1.00 |
+| tone | 0.98 * |
+| naturalness | 0.85 * |
+| language_quality | 1.00 * |
+| saved_values | 1.00 * |
+| faq_answers | 1.00 * |
+| summary | 0.50 * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 3.5 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.3 |
+| requests per turn (mean, max) | 1.65, 3 |
+| USD / completed | 0.0552 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,340,721 / 1,302,567 / 7,199 |
+| spend: agent / simulator USD | 0.442 / 0.033 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 301 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2306 · prompt 62b0d630 · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 1.00 |
+| grounded | 0.97 |
+| knockouts_first | 1.00 |
+| no_reask | 0.97 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.93 * |
+| naturalness | 0.88 * |
+| language_quality | 1.00 * |
+| saved_values | 0.97 * |
+| faq_answers | 1.00 * |
+| summary | 0.67 * |
+| decision | – * |
+| p50 s | 2.3 |
+| p95 s | 3.1 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.4 |
+| requests per turn (mean, max) | 1.67, 3 |
+| USD / completed | 0.0721 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,355,118 / 1,321,673 / 7,086 |
+| spend: agent / simulator USD | 0.432 / 0.032 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 304 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2309 · prompt 62b0d630 · 43 cases × 1
+
+Simulator openai:gpt-6-sol, judge anthropic:claude-opus-5-5. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 43 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 0.95 |
+| grounded | 0.98 |
+| knockouts_first | 1.00 |
+| no_reask | 0.98 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.85 |
+| naturalness | 0.84 |
+| language_quality | 0.97 |
+| saved_values | 1.00 |
+| faq_answers | 1.00 |
+| summary | 0.88 |
+| decision | 1.00 |
+| p50 s | 2.5 |
+| p95 s | 3.8 |
+| request p50 / p95 / p99 s | 1.2 / 1.8 / 2.1 |
+| requests per turn (mean, max) | 1.81, 3 |
+| USD / completed | 0.0398 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,945,860 / 1,892,612 / 10,515 |
+| spend: agent / simulator USD | 0.637 / 0.204 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 423 |
+| topic loads (bounced) | where_we_hire 3, how_hiring_works 2, vehicle_and_equipment 2, documents_and_contract 2, pay 1, shifts 1 (0) |
+
+## 20261025-2319 · prompt 87a1c437 · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 1.00 |
+| grounded | 0.97 |
+| knockouts_first | 1.00 |
+| no_reask | 0.97 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 1.00 * |
+| naturalness | 0.87 * |
+| language_quality | 1.00 * |
+| saved_values | 1.00 * |
+| faq_answers | 1.00 * |
+| summary | 0.33 * |
+| decision | – * |
+| p50 s | 2.4 |
+| p95 s | 3.4 |
+| request p50 / p95 / p99 s | 1.3 / 1.9 / 2.5 |
+| requests per turn (mean, max) | 1.67, 2 |
+| USD / completed | 0.0695 |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 1,358,649 / 1,330,693 / 6,789 |
+| spend: agent / simulator USD | 0.417 / 0.034 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 306 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2322 · prompt 87a1c437 · 43 cases × 1
+
+Simulator openai:gpt-6-sol, judge anthropic:claude-opus-5-5. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 43 ok, 0 failed |
+| all checks | 0.99 |
+| outcome | 1.00 |
+| grounded | 0.95 |
+| knockouts_first | 1.00 |
+| no_reask | 0.98 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 0.95 |
+| naturalness | 0.87 |
+| language_quality | 1.00 |
+| saved_values | 1.00 |
+| faq_answers | 1.00 |
+| summary | 0.67 |
+| decision | 0.00 |
+| p50 s | 2.5 |
+| p95 s | 3.5 |
+| request p50 / p95 / p99 s | 1.3 / 1.7 / 2.1 |
+| requests per turn (mean, max) | 1.80, 3 |
+| USD / completed | 0.0418 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,937,726 / 1,887,856 / 10,382 |
+| spend: agent / simulator USD | 0.626 / 0.203 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 422 |
+| topic loads (bounced) | where_we_hire 3, how_hiring_works 2, vehicle_and_equipment 2, documents_and_contract 2, pay 1, shifts 1 (0) |
+
+## 20261025-2330 · prompt 920a8fed · 12 cases × 3
+
+Simulator openai:gpt-6-sol, judge openai:gpt-6-luna. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 36 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | – |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | 1.00 * |
+| naturalness | 0.92 * |
+| language_quality | 1.00 * |
+| saved_values | 1.00 * |
+| faq_answers | 1.00 * |
+| summary | 0.33 * |
+| decision | – * |
+| p50 s | 2.5 |
+| p95 s | 3.2 |
+| request p50 / p95 / p99 s | 1.3 / 1.8 / 3.1 |
+| requests per turn (mean, max) | 1.68, 2 |
+| USD / completed | 0.0716 |
+| cache share | 0.98 |
+| agent tokens: input / cache read / output | 1,373,379 / 1,342,593 / 7,066 |
+| spend: agent / simulator USD | 0.430 / 0.034 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 308 |
+| topic loads (bounced) | where_we_hire 3 (0) |
+
+## 20261025-2333 · prompt 920a8fed · 43 cases × 1
+
+Simulator openai:gpt-6-sol, judge anthropic:claude-opus-5-5. Checks and scores are means over runs (1.00 = always). * = judged by a model of the same family, which may favour its style.
+
+| | openai:gpt-5.6-terra |
+|---|---|
+| thinking sent | {'effort': 'none', 'context': 'all_turns'} |
+| runs | 43 ok, 0 failed |
+| all checks | 1.00 |
+| outcome | 1.00 |
+| grounded | 1.00 |
+| knockouts_first | 1.00 |
+| no_reask | 1.00 |
+| two_tries_max | 1.00 |
+| no_standalone_ack | 1.00 |
+| faq_topics | 1.00 |
+| saved_language | 1.00 |
+| regional_terms | 1.00 |
+| gender_neutral | 1.00 |
+| saved_answers | 1.00 |
+| message_shape | 1.00 |
+| tone | – |
+| naturalness | – |
+| language_quality | – |
+| saved_values | – |
+| faq_answers | – |
+| summary | – |
+| decision | – |
+| p50 s | 2.5 |
+| p95 s | 4.1 |
+| request p50 / p95 / p99 s | 1.3 / 1.8 / 2.3 |
+| requests per turn (mean, max) | 1.80, 3 |
+| USD / completed | 0.0419 |
+| cache share | 0.97 |
+| agent tokens: input / cache read / output | 1,932,321 / 1,881,108 / 10,362 |
+| spend: agent / simulator USD | 0.628 / 0.204 |
+| cache collapses | 0.00 |
+| responses by model | gpt-5.6-terra 421 |
+| topic loads (bounced) | where_we_hire 3, how_hiring_works 2, vehicle_and_equipment 2, documents_and_contract 2, pay 1, shifts 1 (0) |
+

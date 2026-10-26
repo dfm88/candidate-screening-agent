@@ -170,6 +170,317 @@ cases:
         license: "yes"
         location_id: not saved
 
+  # The service area, whatever the candidate says (2026-10-26). The first replays a call: asked for the postal code,
+  # the candidate named the place with its city; the agent saved nothing and asked for the code, read "8001" back, and
+  # saved "08011" from "eight, zero, zero, one, one" unconfirmed: a knockout. The rest are held-out variants in other
+  # words: a place with its city, a city with no restaurant, a misspelled place, codes that can't exist, a code outside
+  # every area before and after it's confirmed, and a code in another of our areas.
+  - name: scripted_en_call_place_with_city_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: ddiego
+      application_language: en
+      now: 2026-10-21T16:00:00Z
+      medium: voice
+      profile: |
+        Diego, Italian, living in Gràcia, Barcelona, with an Italian license valid in Spain. The call as it happened,
+        up to his answer to the postal code question: the place with its city, which is saved.
+      script:
+        - messages: ["Go ahead."]
+        - messages: ["Yeah."]
+          provides: [full_name]
+        - messages: ["Diego Rigoni."]
+          provides: [full_name]
+        - messages: ["I have, uh, an Italian, uh, driving licence."]
+          provides: [license]
+        - messages: ["Yeah."]
+          provides: [license]
+        - messages: ["Barcelona, Gràcia."]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, voice]
+      status: in_progress
+      final_language: en
+      answers:
+        full_name: Diego Rigoni
+        license: "yes"
+        location_id: es-bcn-gracia
+
+  - name: scripted_en_call_place_with_city_then_spoken_code_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: ddiego
+      application_language: en
+      now: 2026-10-21T16:00:00Z
+      medium: voice
+      profile: |
+        Diego, Italian, living in Gràcia, Barcelona, with an Italian license valid in Spain. The whole call as it
+        happened. Once the place is saved, his later lines answer other questions; whatever they're read as, nothing
+        ends the screening: a code he gives replaces the place only once confirmed, and then he's asked which is right.
+      script:
+        - messages: ["Go ahead."]
+        - messages: ["Yeah."]
+          provides: [full_name]
+        - messages: ["Diego Rigoni."]
+          provides: [full_name]
+        - messages: ["I have, uh, an Italian, uh, driving licence."]
+          provides: [license]
+        - messages: ["Yeah."]
+          provides: [license]
+        - messages: ["Barcelona, Gràcia."]
+          provides: [service_area]
+        - messages: ["I don't know."]
+        - messages: ["8001."]
+          provides: [service_area]
+        - messages: ["Yeah."]
+        - messages: ["Yeah, eight, zero, zero, one, one."]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, voice]
+      status: in_progress
+      unclear: null
+      final_language: en
+      answers:
+        full_name: Diego Rigoni
+        license: "yes"
+
+  - name: scripted_es_place_with_city_answering_postal_code
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Paula Soler Ferrer
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Paula answers the area question with her neighbourhood and its city, no postal code.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el B desde hace años"]
+          provides: [license]
+        - messages: ["Russafa, Valencia"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Paula Soler Ferrer
+        license: "yes"
+        location_id: es-vlc-ruzafa
+
+  - name: scripted_es_city_we_dont_hire_in
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Hugo Navarro Lozano
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Hugo lives in a city where the chain has no restaurant. Nothing is saved and nothing ends the screening: he's
+        told we don't hire there and asked where he lives or will live.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["sí, carnet B en vigor"]
+          provides: [license]
+        - messages: ["yo vivo en Zaragoza"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Hugo Navarro Lozano
+        license: "yes"
+        location_id: not saved
+
+  - name: scripted_es_misspelled_place_asked
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Marc Vidal Roca
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Marc misspells his neighbourhood. Nothing is saved on that message: he's asked whether he means the one we
+        have.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, correcto"]
+          provides: [full_name]
+        - messages: ["tengo carnet, sí"]
+          provides: [license]
+        - messages: ["en Grasia"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Marc Vidal Roca
+        license: "yes"
+        location_id: not saved
+
+  - name: scripted_es_misspelled_place_confirmed
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Marc Vidal Roca
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Marc misspells his neighbourhood and says yes to the one offered. It's saved after his yes.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, correcto"]
+          provides: [full_name]
+        - messages: ["tengo carnet, sí"]
+          provides: [license]
+        - messages: ["en Grasia"]
+          provides: [service_area]
+        - messages: ["sí, ese"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Marc Vidal Roca
+        license: "yes"
+        location_id: es-bcn-gracia
+
+  - name: scripted_es_postal_code_that_cannot_exist
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Sara Molina Ortega
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Sara types her postal code with two digits swapped: no Spanish province starts that way. It isn't a "no":
+        nothing is saved and the screening goes on.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí que tengo"]
+          provides: [license]
+        - messages: ["vivo en el 82010"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Sara Molina Ortega
+        license: "yes"
+        location_id: not saved
+
+  - name: scripted_es_postal_code_missing_its_zero_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Laia Ferrer Puig
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      medium: voice
+      profile: |
+        Laia says her postal code and speech recognition drops its leading zero. She says yes to the code read back,
+        whichever reading it was. Nothing is saved she didn't confirm, and nothing ends the screening.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["Sí, soy yo."]
+          provides: [full_name]
+        - messages: ["Sí, tengo carnet."]
+          provides: [license]
+        - messages: ["8012."]
+          provides: [service_area]
+        - messages: ["Sí."]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, voice]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Laia Ferrer Puig
+        license: "yes"
+
+  - name: scripted_es_out_of_area_code_before_confirming
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Rubén Ortiz Peña
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Rubén gives a real postal code outside every area, and nothing else. It's shown to him first, saved before
+        or after: the screening doesn't end before he confirms it.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["sí, en vigor"]
+          provides: [license]
+        - messages: ["mi código postal es el 45004"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, knockout]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Rubén Ortiz Peña
+        license: "yes"
+
+  - name: scripted_es_out_of_area_code_confirmed
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Rubén Ortiz Peña
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Rubén gives a real postal code outside every area and confirms it: the screening ends, not qualified.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["sí, en vigor"]
+          provides: [license]
+        - messages: ["mi código postal es el 45004"]
+          provides: [service_area]
+        - messages: ["sí, es ese"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, knockout]
+      status: completed
+      outcome: not_qualified
+      final_language: es
+      answers:
+        full_name: Rubén Ortiz Peña
+        license: "yes"
+        location_id: null
+
+  - name: scripted_es_code_in_another_area
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Andrea Gil Sanz
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Andrea applied for Barcelona but has moved to Valencia, inside another restaurant's area. It's saved, and the
+        screening goes on.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, carnet en vigor"]
+          provides: [license]
+        - messages: ["me he mudado a Valencia, cp 46005"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Andrea Gil Sanz
+        license: "yes"
+        location_id: es-vlc-ruzafa
+
   # Seen live in a voice call (prompt 71e6804a): at the recap the candidate confirmed and corrected the start date in
   # one message; terra saved the date, then said the profile met the requirements without calling finish_screening.
   # Varied: a text chat in Mexico, other answers and dates.

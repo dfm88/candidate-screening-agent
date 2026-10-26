@@ -64,7 +64,7 @@ flowchart TD
 |---|---|---|
 | **Full name** (required) | From the application, confirmed in the intro; asks once for surname(s) if missing (two are common) | Missing → ⚑ |
 | **Driver's license** ⛔ | Valid today for driving in the country of work | **Yes** · **No** (none, expired, in progress) → not qualified · **Unclear** (e.g. foreign) → ⚑ |
-| **Service area** ⛔ | Home postal code, checked against all areas in the vacancy's country; place names are looked up, and the postal code asked if there's no single match | **Yes** → matching restaurant recorded · **No** → not qualified · **Unclear** → ⚑ |
+| **Service area** ⛔ | Home postal code or place, checked against all areas in the vacancy's country; place names are looked up, and the postal code asked if there's no single match | **Yes** → matching restaurant recorded · **No** (a postal code they've confirmed) → not qualified · **Unclear** → ⚑ |
 | **Availability** | One or more of: full-time, part-time, weekends | "Only weekends" → weekends |
 | **Schedule** | One or more of: morning, afternoon, evening, flexible | "I don't mind" → flexible |
 | **Experience** | Years (0 is valid) + platforms (Glovo, Uber Eats, Rappi, DiDi Food, other); no minimum | "Never" → 0 years |

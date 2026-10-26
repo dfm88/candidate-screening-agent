@@ -57,7 +57,7 @@ class OutcomeMatches(Evaluator[Persona, ScreeningRun, Expected]):
             "status": expected.status,
             "outcome": expected.outcome,
             "review_reasons": sorted(set(expected.review_reasons)),
-            "unclear": sorted(expected.unclear),
+            "unclear": actual["unclear"] if expected.unclear is None else sorted(expected.unclear),
             "talent_pool_opt_in": expected.talent_pool_opt_in,
         }
         wrong = [f"{key}: {actual[key]} (expected {wanted[key]})" for key in wanted if actual[key] != wanted[key]]
@@ -287,7 +287,8 @@ SAVED_VALUES_RUBRIC = (
     "stored them, and the arguments it passed to save them. Each saved value must be what the candidate said up to "
     "then, read in the input's date and country: nothing the candidate didn't say, nothing narrowed or widened (an "
     "'any time' schedule is flexible, not every option; 'weekends' alone is not part-time), postal codes and names as "
-    "they wrote them, a relative date counted from today (a bare weekday is the next one, never today). An unclear "
+    "they wrote them or confirmed them when read back (spoken, a code's leading zero is often lost), a relative date "
+    "counted from today (a bare weekday is the next one, never today). An unclear "
     "answer saved as yes or no is wrong. The restaurant named with an area is the system's lookup of the place or "
     "postal code, not something the candidate has to say; where a field has fixed options, a nuance they can't hold "
     "(how often, a preference) is no mismatch. Score 1.0 when every saved value holds, 0.0 when any was invented or "
@@ -300,8 +301,9 @@ FAQ_RUBRIC = (
     "nothing added, nothing changed. What the assistant says about this chat itself (the first message, who sees the "
     "answers, the next question) is no answer. A question the topics don't answer gets a reply that the team will "
     "check, never a guess. Asked "
-    "whether a place is covered, the assistant says neither yes nor no and asks for the postal code. Score 1.0 when "
-    "every answer holds, 0.0 when any adds or changes a fact, guesses, or says whether a place is covered."
+    "whether a place in one of the topic's cities is covered, the assistant says neither yes nor no and asks for the "
+    "postal code; that we don't hire in a city missing from the topic is a fact it may say. Score 1.0 when every "
+    "answer holds, 0.0 when any adds or changes a fact, guesses, or says whether a place in those cities is covered."
 )
 SUMMARY_RUBRIC = (
     "The output is the part of a recruiter's summary that adds to the key data in the input, which the recruiter "

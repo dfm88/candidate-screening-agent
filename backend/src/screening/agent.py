@@ -44,7 +44,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from screening import domain
-from screening.config import ClientConfig, Country, Language, Settings
+from screening.config import COUNTRY_NAMES, ClientConfig, Country, Language, Settings
 from screening.domain import (
     Application,
     EndReason,
@@ -72,7 +72,6 @@ SUMMARY_SETTINGS = ModelSettings(temperature=0.2, thinking=False)
 # but no change to what the models read can slip past it.
 CODE = Path(__file__).read_text(encoding="utf-8") + Path(domain.__file__).read_text(encoding="utf-8")
 LANGUAGE_NAMES = {Language.ES: "Spanish", Language.EN: "English"}
-COUNTRY_NAMES = {Country.ES: "Spain", Country.MX: "Mexico"}
 
 
 class Medium(StrEnum):
@@ -130,10 +129,10 @@ def faq_topics(config: ClientConfig, application: Application) -> list[Capabilit
         [
             f"Where we hire in {COUNTRY_NAMES[country]}: each city, its restaurants, and places their areas cover.",
             *(f"- {city}: {'; '.join(restaurants)}" for city, restaurants in cities.items()),
-            "This list says where we hire. Whether the candidate's own area is covered is decided only by "
-            "save_answers, from the postal code or place where they live: never say or suggest it, nor that an area "
-            "reaches beyond the places listed. Asked whether we cover a place, say neither yes nor no: ask for their "
-            "postal code.",
+            "This list says where we hire: in a city that isn't on it, we don't. In these cities, whether the "
+            "candidate's own area is covered is decided only by save_answers, from the postal code or place where they "
+            "live: never say or suggest it, nor that an area reaches beyond the places listed. Asked whether we cover "
+            "a place in one of them, say neither yes nor no: ask for their postal code.",
         ]
     )
     topics.append(
@@ -247,8 +246,9 @@ def end_conversation(ctx: RunContext[Deps], reason: EndReason) -> str:
 
 @screening_agent.tool
 def finish_screening(ctx: RunContext[Deps]) -> domain.FinishResult:
-    """Compute the outcome: after the candidate confirms the recap, right after a knockout "no", or when they asked
-    for a person and don't want to continue. Code decides the outcome; you phrase the close."""
+    """Compute the outcome: after the candidate confirms the recap, right after a knockout "no" (as the instructions
+    define it: one from the area waits for the candidate to confirm the postal code), or when they asked for a person
+    and don't want to continue. Code decides the outcome; you phrase the close."""
     ctx.deps.state, result = domain.finish_screening(ctx.deps.state, ctx.deps.decision)
     return result
 

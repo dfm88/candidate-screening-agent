@@ -102,7 +102,8 @@ class Expected(BaseModel):
     status: Status
     outcome: Outcome | None = None
     review_reasons: list[ReviewReason] = []
-    unclear: list[FieldName] = []
+    # null: not checked, for a replay whose later turns may fairly go either way once the one under test has passed.
+    unclear: list[FieldName] | None = []
     answers: ExpectedAnswers = ExpectedAnswers()
     final_language: Language
     talent_pool_opt_in: bool | None = None
@@ -183,7 +184,8 @@ class ScreeningRun(BaseModel):
 class CandidateTurn(BaseModel):
     asked_about: list[Asked] = Field(
         description="What the assistant's latest messages ask you to provide or answer: the fields, 'recap' when "
-        "it asks you to confirm things you already said, 'talent_pool' when it asks whether you want to hear about "
+        "it asks you to confirm things you already said (a recap, or an answer read back to you: 'Your postal code is "
+        "46005, right?' is 'recap', not the field), 'talent_pool' when it asks whether you want to hear about "
         "other roles, 'other' for any other question. Empty if they ask nothing."
     )
     messages: list[str] = Field(

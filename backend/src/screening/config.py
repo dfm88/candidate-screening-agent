@@ -17,6 +17,9 @@ class Country(StrEnum):
     MX = "MX"
 
 
+COUNTRY_NAMES = {Country.ES: "Spain", Country.MX: "Mexico"}
+
+
 class Language(StrEnum):
     ES = "es"
     EN = "en"

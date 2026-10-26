@@ -34,6 +34,7 @@ CONFIG = load_client_config(DEFAULT_CLIENT_CONFIG)
 NOW = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # a Saturday morning in Madrid
 MADRID = Application(full_name="Lucía Martín García", vacancy_location_id="es-mad-chamberi", language=Language.ES)
 CDMX = Application(full_name="José Hernández", vacancy_location_id="mx-cdmx-roma", language=Language.ES)
+BARCELONA = Application(full_name="Marc Vidal Roca", vacancy_location_id="es-bcn-gracia", language=Language.ES)
 EVERYTHING = NewAnswers(
     full_name="Lucía Martín García",
     license=LicenseAnswer.YES,
@@ -86,6 +87,16 @@ def test_place_lookup_ignores_accents_case_and_colonia_prefix() -> None:
     assert lookup_place("Madrid", CONFIG, Country.ES) == []
 
 
+@pytest.mark.parametrize("name", ["Barcelona, Gràcia", "en Gràcia, Barcelona", "Gracia,barcelona", "in Gràcia"])
+def test_place_lookup_reads_a_place_given_with_its_city(name: str) -> None:
+    assert [loc.id for loc in lookup_place(name, CONFIG, Country.ES)] == ["es-bcn-gracia"]
+
+
+def test_the_city_given_with_a_place_picks_one_of_its_areas() -> None:
+    assert [loc.id for loc in lookup_place("Centro, Monterrey", CONFIG, Country.MX)] == ["mx-mty-centro"]
+    assert len(lookup_place("Centro, Cancún", CONFIG, Country.MX)) == 3  # a city of none of them picks none
+
+
 def test_platform_names_are_normalized_and_unknown_ones_kept() -> None:
     names = ["uber", "GLOVO", "Pizzería Luigi", "Glovo"]
     assert normalize_platforms(names, CONFIG) == ["Uber Eats", "Glovo", "Pizzería Luigi"]
@@ -124,7 +135,7 @@ def test_several_answers_at_once_are_saved_and_the_rest_listed_in_order() -> Non
     state, result = save(new)
     assert result.saved == {
         FieldName.LICENSE: "yes",
-        FieldName.SERVICE_AREA: "lives at 28010, in the area of the Madrid Chamberí restaurant",
+        FieldName.SERVICE_AREA: "lives at 28010, in the area of the Madrid Chamberí restaurant, in Madrid",
         FieldName.AVAILABILITY: "weekends",
     }
     assert result.still_to_ask == [FieldName.FULL_NAME, FieldName.SCHEDULE, FieldName.EXPERIENCE, FieldName.START_DATE]
@@ -135,7 +146,46 @@ def test_postal_code_outside_every_area_is_a_knockout() -> None:
     state, result = save(NewAnswers(postal_code="28001"))
     assert state.knockout is NotQualifiedReason.OUTSIDE_SERVICE_AREA
     assert result.saved[FieldName.SERVICE_AREA] == "lives at 28001, outside every service area"
-    assert result.knockout and "finish_screening" in result.knockout
+    assert result.knockout == "outside_service_area: the postal code saved, 28001, is outside every service area"
+
+
+def test_an_outside_code_says_which_area_from_a_named_place_it_replaced() -> None:
+    # The candidate named Gràcia, then gave a code outside every area: the agent checks which is right first.
+    state, _ = save(NewAnswers(place="Gràcia"), app=BARCELONA)
+    state, result = save(NewAnswers(postal_code="08011"), state=state, app=BARCELONA)
+    assert state.knockout is NotQualifiedReason.OUTSIDE_SERVICE_AREA
+    assert result.knockout == (
+        "outside_service_area: the postal code saved, 08011, is outside every service area. It replaced Gràcia, which "
+        "they named before, in the Barcelona Gràcia area: the two disagree"
+    )
+    # A code replacing a code is a correction they gave: nothing to say about the one before.
+    state, result = save(NewAnswers(postal_code="08001"), state=state, app=BARCELONA)
+    assert result.knockout and "replaced" not in result.knockout
+
+
+def test_a_code_in_another_of_our_areas_is_saved_and_named_with_its_city() -> None:
+    state, result = save(NewAnswers(postal_code="46005"), app=BARCELONA)
+    assert state.knockout is None and state.answers.area and state.answers.area.location_id == "es-vlc-ruzafa"
+    assert result.saved[FieldName.SERVICE_AREA] == (
+        "lives at 46005, in the area of the Valencia Ruzafa restaurant, in Valencia, not Barcelona Gràcia, the one "
+        "they applied for"
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "app"),
+    [
+        ("8001", BARCELONA),  # 08001 with its leading zero lost
+        ("80011", BARCELONA),  # no Spanish province begins with 80
+        ("00123", MADRID),
+        ("6700", CDMX),  # 06700, Roma Norte, without its zero
+    ],
+)
+def test_a_code_that_cant_exist_is_no_answer_and_says_a_spoken_zero_gets_lost(code: str, app: Application) -> None:
+    state, result = save(NewAnswers(postal_code=code), app=app)
+    assert state.answers.area is None and state.knockout is None  # unknown is not "no"
+    assert result.not_saved[FieldName.SERVICE_AREA].startswith(f"{code!r} can't be a postal code in ")
+    assert "08001 is heard as 8001" in result.not_saved[FieldName.SERVICE_AREA]
 
 
 def test_the_same_postal_code_is_read_in_the_vacancy_country() -> None:
@@ -148,12 +198,12 @@ def test_the_same_postal_code_is_read_in_the_vacancy_country() -> None:
 @pytest.mark.parametrize(
     ("new", "hint"),
     [
-        (NewAnswers(place="Centro"), "matches several areas"),
-        (NewAnswers(place="Narnia"), "isn't a place we know"),
-        (NewAnswers(postal_code="280"), "not a 5-digit postal code"),
+        (NewAnswers(place="Centro"), "several of our areas"),
+        (NewAnswers(place="Narnia"), "isn't among the places we know"),
+        (NewAnswers(postal_code="280"), "can't be a postal code in Mexico (5 digits)"),
     ],
 )
-def test_unusable_area_answers_are_not_saved_and_say_what_to_ask(new: NewAnswers, hint: str) -> None:
+def test_unusable_area_answers_are_not_saved_and_say_why(new: NewAnswers, hint: str) -> None:
     state, result = save(new, app=CDMX)
     assert hint in result.not_saved[FieldName.SERVICE_AREA]
     assert state.answers.area is None and state.knockout is None  # unknown is not "no"
@@ -163,7 +213,7 @@ def test_a_place_miss_lists_the_known_places_and_the_other_answers_are_still_sav
     state, result = save(NewAnswers(place="Zona Norte", availability=[Availability.WEEKENDS]))
     assert result.saved == {FieldName.AVAILABILITY: "weekends"}
     message = result.not_saved[FieldName.SERVICE_AREA]
-    assert all(place in message for place in ("Chamberí", "Malasaña", "Getafe", "Gràcia"))
+    assert all(place in message for place in ("Madrid: Chamberí, Malasaña", "Getafe", "Barcelona: Gràcia"))
     assert "Roma Norte" not in message  # the vacancy's country only
     # Names only: with a postal code in sight the model could save one the candidate never gave.
     assert not any(prefix in message for location in CONFIG.locations for prefix in location.postal_prefixes)
@@ -172,7 +222,10 @@ def test_a_place_miss_lists_the_known_places_and_the_other_answers_are_still_sav
 
 def test_a_known_place_saves_the_matching_restaurant_even_if_not_the_applied_one() -> None:
     _, result = save(NewAnswers(place="Obispado"), app=CDMX)
-    assert result.saved[FieldName.SERVICE_AREA] == "lives at Obispado, in the area of the Monterrey Centro restaurant"
+    assert result.saved[FieldName.SERVICE_AREA] == (
+        "lives at Obispado, in the area of the Monterrey Centro restaurant, in Monterrey, not CDMX Roma-Condesa, the "
+        "one they applied for"
+    )
 
 
 def test_relative_dates_resolve_in_the_restaurant_time_zone() -> None:

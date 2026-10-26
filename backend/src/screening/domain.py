@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from screening.config import ClientConfig, Country, Language, Location
+from screening.config import COUNTRY_NAMES, ClientConfig, Country, Language, Location
 
 # --- Vocabulary -------------------------------------------------------------------------------------------
 
@@ -262,8 +262,10 @@ def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldNam
             described[FieldName.SERVICE_AREA] = f"lives at {where}, outside every service area"
         else:
             # "Madrid Chamberí (28015)" read as "28015 is in Chamberí" to the models: name the restaurant as one.
-            restaurant = config.locations_by_id[answers.area.location_id].name
-            described[FieldName.SERVICE_AREA] = f"lives at {where}, in the area of the {restaurant} restaurant"
+            restaurant = config.locations_by_id[answers.area.location_id]
+            described[FieldName.SERVICE_AREA] = (
+                f"lives at {where}, in the area of the {restaurant.name} restaurant, in {restaurant.city}"
+            )
     if answers.availability:
         described[FieldName.AVAILABILITY] = ", ".join(answers.availability)
     if answers.schedule:
@@ -283,7 +285,7 @@ def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldNam
 class SaveResult(BaseModel):
     saved: dict[FieldName, str]
     not_saved: dict[FieldName, str] = Field(description="Why each answer wasn't saved, and what to do instead.")
-    knockout: str | None = Field(description="Set when the candidate doesn't qualify: call finish_screening.")
+    knockout: str | None = Field(description="Set while an answer means the candidate doesn't qualify: which one.")
     still_to_ask: list[FieldName]
     decision: str | None = Field(
         default=None, description="Set once the hiring team has decided: their outcome stands."
@@ -306,6 +308,7 @@ def save_answers(
     knockout_before = state.knockout
     touched: set[FieldName] = set()
     not_saved: dict[FieldName, str] = {}
+    replaced: AreaMatch | None = None
 
     if new.full_name:
         answers.full_name = new.full_name.strip()
@@ -318,11 +321,19 @@ def save_answers(
 
     if new.postal_code:
         code = re.sub(r"\D", "", new.postal_code)
-        if len(code) != 5:
-            not_saved[FieldName.SERVICE_AREA] = f"{new.postal_code!r} is not a 5-digit postal code: ask again"
+        country = COUNTRY_NAMES[vacancy.country]
+        # A Spanish code begins with its province, 01 to 52. Of a Mexican one we check the length only.
+        if len(code) != 5 or (vacancy.country is Country.ES and not "01" <= code[:2] <= "52"):
+            rule = "5 digits, the first two from 01 to 52" if vacancy.country is Country.ES else "5 digits"
+            not_saved[FieldName.SERVICE_AREA] = (
+                f"{new.postal_code!r} can't be a postal code in {country} ({rule}). Said aloud, a leading zero is "
+                "often lost: 08001 is heard as 8001."
+            )
         else:
             # Spain and Mexico both use 5-digit codes: read the code in the vacancy's country.
             location = match_postal_code(code, config, vacancy.country, preferred=vacancy.id)
+            # An area saved from a place they named, which this code replaces.
+            replaced = answers.area if answers.area and answers.area.postal_code is None else None
             answers.area = AreaMatch(location_id=location.id if location else None, postal_code=code, place=new.place)
             touched.add(FieldName.SERVICE_AREA)
     elif new.place:
@@ -333,21 +344,19 @@ def save_answers(
         elif locations:
             names = ", ".join(location.name for location in locations)
             not_saved[FieldName.SERVICE_AREA] = (
-                f"{new.place!r} matches several areas ({names}): ask for the postal code"
+                f"{new.place!r} is a place in several of our areas ({names}): only the postal code tells which."
             )
         else:
             # An unknown place isn't a "no": only the postal code can tell. The names only, never their postal
             # codes: with a code in sight the model could save one the candidate never gave.
-            known = dict.fromkeys(
-                place
-                for location in config.locations
-                if location.country is vacancy.country
-                for place in location.places
-            )
+            cities: dict[str, list[str]] = {}
+            for location in config.locations:
+                if location.country is vacancy.country:
+                    cities.setdefault(location.city, []).extend(location.places)
+            known = "; ".join(f"{city}: {', '.join(dict.fromkeys(places))}" for city, places in cities.items())
             not_saved[FieldName.SERVICE_AREA] = (
-                f"{new.place!r} isn't a place we know. Known places: {', '.join(known)}. If the candidate wrote one of "
-                "them in other words, save that name as the place. If it looks like a misspelling of one, ask whether "
-                "they mean it and save it after their yes. Otherwise ask for the postal code."
+                f"{new.place!r} isn't among the places we know by name; only a postal code can tell whether it's in "
+                f"one of our areas. The places we know in {COUNTRY_NAMES[vacancy.country]}, by city: {known}."
             )
 
     if new.availability:
@@ -398,9 +407,20 @@ def save_answers(
             state.outcome = Outcome.NEEDS_HUMAN_REVIEW
 
     described = describe_saved(state, config)
-    knockout = f"{knockout_after}: the candidate doesn't qualify, call finish_screening" if knockout_after else None
+    saved = {field: described[field] for field in touched if field in described}
+    area = answers.area
+    if FieldName.SERVICE_AREA in saved and area and area.location_id not in (None, vacancy.id):
+        saved[FieldName.SERVICE_AREA] += f", not {vacancy.name}, the one they applied for"
+    knockout = f"{knockout_after}: the candidate doesn't qualify" if knockout_after else None
+    if knockout_after is NotQualifiedReason.OUTSIDE_SERVICE_AREA and area:
+        knockout = f"{knockout_after}: the postal code saved, {area.postal_code}, is outside every service area"
+        if replaced and replaced.location_id:
+            restaurant = config.locations_by_id[replaced.location_id].name
+            knockout += (
+                f". It replaced {replaced.place}, which they named before, in the {restaurant} area: the two disagree"
+            )
     return state, SaveResult(
-        saved={field: described[field] for field in touched if field in described},
+        saved=saved,
         not_saved=not_saved,
         knockout=None if decision else knockout,
         still_to_ask=still_to_ask(state, decision),
@@ -501,7 +521,7 @@ def end_conversation(state: ScreeningState, reason: EndReason) -> ScreeningState
 
 # --- Lookups ---------------------------------------------------------------------------------------------------
 
-_PLACE_PREFIXES = ("colonia ", "col ", "barrio ", "barri ", "fraccionamiento ")
+_PLACE_PREFIXES = ("en ", "in ", "colonia ", "col ", "barrio ", "barri ", "fraccionamiento ")
 
 
 def _normalize(text: str) -> str:
@@ -525,15 +545,21 @@ def match_postal_code(code: str, config: ClientConfig, country: Country, preferr
 
 
 def lookup_place(name: str, config: ClientConfig, country: Country) -> list[Location]:
-    """Restaurants with a place of this name in their area. More than one means: ask for the postal code."""
-    wanted = _normalize(name)
-    for prefix in _PLACE_PREFIXES:
-        wanted = wanted.removeprefix(prefix)
-    return [
+    """Restaurants with a place of this name in their area. Read by its comma-separated parts: candidates add the city,
+    in either order ("Barcelona, Gràcia"), and the city picks one when the place is in several. More than one left
+    means: ask for the postal code."""
+    parts: set[str] = set()
+    for part in name.split(","):
+        wanted = _normalize(part)
+        for prefix in _PLACE_PREFIXES:
+            wanted = wanted.removeprefix(prefix)
+        parts.add(wanted)
+    found = [
         location
         for location in config.locations
-        if location.country is country and any(_normalize(place) == wanted for place in location.places)
+        if location.country is country and any(_normalize(place) in parts for place in location.places)
     ]
+    return [location for location in found if _normalize(location.city) in parts] or found
 
 
 def normalize_platforms(names: list[str], config: ClientConfig) -> list[str]:
