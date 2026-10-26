@@ -1,23 +1,29 @@
 """The clock's work through tick(now), and the metrics, against the compose Postgres: reminders and their quiet hours,
-*abandoned*, the capped retry and the summaries a restart lost. The clock is injected; the LLM is stubbed.
+*abandoned*, the capped retry and the summaries a restart lost. The clock is injected; the LLM is stubbed. Then the
+chat's worker: a run thrown away, and run again, when a message arrives while it goes.
 
-Each test starts from empty tables, because tick and the metrics look at every candidate.
+Each test of tick or the metrics starts from empty tables, because they look at every candidate.
 """
 
+import asyncio
+import itertools
+import re
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic_ai import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai import ModelMessage, ModelResponse, TextPart, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.usage import RequestUsage
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from screening.channels import WebChatChannel
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Settings, load_client_config
-from screening.contract import Author, MessageKind, Tab
+from screening.contract import Author, ChatEvent, ChatMessage, MessageKind, Tab, Typing
 from screening.db import Candidate, Message, Source, Turn, make_sessionmaker
 from screening.domain import (
     Answers,
@@ -248,3 +254,228 @@ async def test_metrics(service: ScreeningService) -> None:
         "override_rate": 1 / 2,
         "median_seconds_to_outcome": 20 * 60,
     }
+
+
+@dataclass
+class HeldModel:
+    """The screening model, holding each run at the model until the test lets one through. `runs` gets the candidate's
+    messages each run answers, as the run reaches the model. Every reply costs the same tokens."""
+
+    runs: asyncio.Queue[list[str]] = field(default_factory=asyncio.Queue)
+    gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(0))
+    failing: bool = False
+
+    async def respond(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = messages[-1].parts[-1]
+        assert isinstance(prompt, UserPromptPart)
+        self.runs.put_nowait(re.findall(r"<message>(.*?)</message>", str(prompt.content)))
+        await self.gate.acquire()
+        if self.failing:
+            raise RuntimeError("the model is down")
+        return ModelResponse(
+            parts=[TextPart("Gracias, Marta. ¿Tienes carnet de conducir en vigor?")],
+            usage=RequestUsage(input_tokens=1000, output_tokens=20),
+        )
+
+    def let_through(self) -> None:
+        self.gate.release()
+
+    async def next_run(self) -> list[str]:
+        async with asyncio.timeout(5):
+            return await self.runs.get()
+
+
+@pytest.fixture
+def model() -> HeldModel:
+    return HeldModel()
+
+
+@pytest.fixture
+def channel() -> WebChatChannel:
+    return WebChatChannel()
+
+
+@pytest.fixture
+async def answering(database_url: str, model: HeldModel, channel: WebChatChannel) -> AsyncIterator[ScreeningService]:
+    """A service whose worker answers on the held model, after a short debounce."""
+    engine = create_async_engine(database_url)
+    service = ScreeningService(
+        sessionmaker=make_sessionmaker(engine),
+        config=CONFIG,
+        settings=Settings(chat_debounce_seconds=0.05),
+        model=FunctionModel(model.respond),
+        channel=channel,
+    )
+    yield service
+    await service.stop()
+    await engine.dispose()
+
+
+async def until_answered(events: asyncio.Queue[ChatEvent]) -> list[ChatEvent]:
+    """What the chat shows up to the typing indicator going off, which ends a turn."""
+    seen: list[ChatEvent] = []
+    async with asyncio.timeout(5):
+        while not (seen and seen[-1] == Typing(active=False)):
+            seen.append(await events.get())
+    return seen
+
+
+def replies(seen: list[ChatEvent]) -> list[str]:
+    return [event.text for event in seen if isinstance(event, ChatMessage) and event.author is Author.ASSISTANT]
+
+
+async def answered(service: ScreeningService, candidate_id: uuid.UUID) -> list[tuple[int | None, list[str]]]:
+    """The candidate's messages, grouped by the turn that answered them (None while they wait)."""
+    async with service.sessionmaker() as session:
+        rows = await session.scalars(
+            select(Message)
+            .where(Message.candidate_id == candidate_id, Message.author == Author.CANDIDATE)
+            .order_by(Message.id)
+        )
+        return [
+            (turn_id, [row.text for row in group])
+            for turn_id, group in itertools.groupby(rows, lambda row: row.turn_id)
+        ]
+
+
+async def a_run_thrown_away(
+    service: ScreeningService, model: HeldModel, channel: WebChatChannel, candidate: Candidate
+) -> list[ChatEvent]:
+    """The candidate writes "hola", then "soy Marta" while the run on "hola" goes: that run ends and is thrown away, and
+    the next one answers both. What the chat shows until then."""
+    with channel.subscribe(candidate.id) as events:
+        await service.receive(candidate, "hola", "m1")
+        assert await model.next_run() == ["hola"]
+        await service.receive(candidate, "soy Marta", "m2")
+        model.let_through()
+        assert await model.next_run() == ["hola", "soy Marta"]
+        model.let_through()
+        return await until_answered(events)
+
+
+async def test_a_message_during_a_turn_gets_one_reply_with_the_one_before(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+
+    seen = await a_run_thrown_away(answering, model, channel, candidate)
+
+    assert replies(seen) == ["Gracias, Marta. ¿Tienes carnet de conducir en vigor?"]
+    # On from the first run to the reply.
+    assert [event for event in seen if isinstance(event, Typing)] == [Typing(active=True)] * 2 + [Typing(active=False)]
+    assert [texts for _, texts in await answered(answering, candidate.id)] == [["hola", "soy Marta"]]
+
+
+async def test_a_message_while_the_turn_is_stored_gets_the_next_turn(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+    storing, stored = asyncio.Event(), asyncio.Event()
+    record_turn = answering._record_turn
+
+    async def held_record_turn(*args: Any) -> Turn:
+        storing.set()
+        await stored.wait()
+        return await record_turn(*args)
+
+    monkeypatch.setattr(answering, "_record_turn", held_record_turn)
+
+    with channel.subscribe(candidate.id) as events:
+        await answering.receive(candidate, "hola", "m1")
+        assert await model.next_run() == ["hola"]
+        model.let_through()
+        async with asyncio.timeout(5):
+            await storing.wait()
+        await answering.receive(candidate, "soy Marta", "m2")
+        stored.set()
+        first = await until_answered(events)
+        assert await model.next_run() == ["soy Marta"]
+        model.let_through()
+        second = await until_answered(events)
+
+    assert (len(replies(first)), len(replies(second))) == (1, 1)
+    assert [texts for _, texts in await answered(answering, candidate.id)] == [["hola"], ["soy Marta"]]
+
+
+async def test_after_two_runs_thrown_away_the_third_is_sent_and_the_count_starts_over(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+
+    with channel.subscribe(candidate.id) as events:
+        await answering.receive(candidate, "hola", "m1")
+        assert await model.next_run() == ["hola"]
+        await answering.receive(candidate, "soy Marta", "m2")
+        model.let_through()
+        assert await model.next_run() == ["hola", "soy Marta"]
+        await answering.receive(candidate, "vivo en el 28015", "m3")
+        model.let_through()
+        assert await model.next_run() == ["hola", "soy Marta", "vivo en el 28015"]
+        # Two runs thrown away already: this one is sent, and the new message gets the next turn.
+        await answering.receive(candidate, "tengo moto", "m4")
+        model.let_through()
+        first = await until_answered(events)
+        assert await model.next_run() == ["tengo moto"]
+        # A turn was stored: a message during the next run throws it away again.
+        await answering.receive(candidate, "y carnet", "m5")
+        model.let_through()
+        assert await model.next_run() == ["tengo moto", "y carnet"]
+        model.let_through()
+        second = await until_answered(events)
+
+    assert (len(replies(first)), len(replies(second))) == (1, 1)
+    assert [texts for _, texts in await answered(answering, candidate.id)] == [
+        ["hola", "soy Marta", "vivo en el 28015"],
+        ["tengo moto", "y carnet"],
+    ]
+
+
+async def test_a_run_thrown_away_is_not_a_failed_turn(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+
+    await a_run_thrown_away(answering, model, channel, candidate)
+
+    # No failed turn for tick()'s retry cap, and no "give me a moment".
+    async with answering.sessionmaker() as session:
+        errors = await session.scalars(select(Turn.error).where(Turn.candidate_id == candidate.id))
+        notices = await session.scalars(
+            select(Message.id).where(Message.candidate_id == candidate.id, Message.template_key == "failure")
+        )
+        assert (errors.all(), notices.all()) == ([None, None], [])
+
+
+async def test_the_stored_turn_counts_the_usage_of_the_run_thrown_away(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+
+    await a_run_thrown_away(answering, model, channel, candidate)
+
+    async with answering.sessionmaker() as session:
+        usage = await session.scalar(
+            select(Turn.usage).where(Turn.candidate_id == candidate.id, Turn.prompt_version.is_not(None))
+        )
+    assert usage is not None
+    assert (usage["requests"], usage["input_tokens"], usage["output_tokens"]) == (2, 2000, 40)
+
+
+async def test_a_failed_run_is_a_failure_even_if_a_message_came_in_while_it_ran(
+    answering: ScreeningService, model: HeldModel, channel: WebChatChannel
+) -> None:
+    candidate = await load(answering, await applied(answering, status=Status.IN_PROGRESS))
+
+    with channel.subscribe(candidate.id) as events:
+        await answering.receive(candidate, "hola", "m1")
+        assert await model.next_run() == ["hola"]
+        await answering.receive(candidate, "soy Marta", "m2")
+        model.failing = True
+        model.let_through()
+        seen = await until_answered(events)
+        # Longer than the debounce: a run again would have started by now.
+        await asyncio.sleep(0.3)
+
+    assert replies(seen) == ["Dame un momento, por favor."]
+    assert model.runs.empty()
+    assert await answered(answering, candidate.id) == [(None, ["hola", "soy Marta"])]

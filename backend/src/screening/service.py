@@ -17,7 +17,7 @@ import logfire
 from pydantic_ai import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, TextPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_core import to_jsonable_python
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -61,6 +61,9 @@ RETRY_AFTER = timedelta(seconds=60)
 # Failed turns on the same pending messages before tick() stops retrying them: a turn that always fails (one that hits
 # the request limit, say) would cost a model run every minute.
 MAX_FAILED_TURNS = 3
+# Runs in a row a text turn throws away because a new message came in while they went: a candidate who keeps typing
+# still gets a reply.
+MAX_THROWN_AWAY = 2
 
 PENDING = and_(Message.author == Author.CANDIDATE, Message.turn_id.is_(None))
 # The rest are about the candidate of the query they're used in. Correlated explicitly: auto-correlation only reaches
@@ -200,6 +203,9 @@ class ScreeningService:
         self._kicked: set[uuid.UUID] = set()
         # A conversation's turns never overlap: the text worker and a voice call both take its lock.
         self._locks: defaultdict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Text turns whose run a new message would supersede (receive()): None, or when the newest such message came
+        # in (time.monotonic()).
+        self._running: dict[uuid.UUID, float | None] = {}
         # Summaries written in the background, held so they aren't garbage-collected while they run.
         self._background: set[asyncio.Task[None]] = set()
         # Screenings this process has tried to summarize. tick() writes the summaries a restart lost; one that failed
@@ -392,7 +398,8 @@ class ScreeningService:
         self, candidate: Candidate, text: str, client_id: str, kind: MessageKind = MessageKind.TEXT
     ) -> ChatMessage:
         """Store a candidate message (typed, or a voice note as transcribed), echo it, and wake the conversation's
-        worker. A retried send is stored once."""
+        worker. A retried send is stored once. A new message supersedes a text turn whose run is still going, so the
+        turn runs again with it (_work)."""
         now = datetime.now(UTC)
         async with self.sessionmaker() as session:
             same = select(Message).where(Message.candidate_id == candidate.id, Message.client_id == client_id)
@@ -417,6 +424,10 @@ class ScreeningService:
                     # The same send, retried while the first was being stored.
                     await session.rollback()
                     message = (await session.scalars(same)).one()
+                else:
+                    # Only a message stored now: a retried send brings nothing new, so it doesn't throw a run away.
+                    if candidate.id in self._running:
+                        self._running[candidate.id] = time.monotonic()
         echo = ChatMessage.model_validate(message)
         await self.channel.publish(candidate.id, [echo])
         self.ensure_worker(candidate.id)
@@ -534,10 +545,19 @@ class ScreeningService:
         await asyncio.gather(*workers, return_exceptions=True)
 
     async def _work(self, candidate_id: uuid.UUID) -> None:
-        """Let a burst of messages settle, answer everything pending in one turn, and repeat until nothing is."""
+        """Let a burst of messages settle, answer everything pending in one turn, and repeat until nothing is. A run
+        that a new message came in during (receive()) is thrown away when it ends: nothing is stored or sent, and after
+        the wait from that message the turn runs again with it too, up to MAX_THROWN_AWAY times in a row. Once the run
+        has ended, a new message waits for the next turn."""
+        # From a burst's first message; after a run thrown away, from the newest message that came in during it.
+        wait = self.settings.chat_debounce_seconds
+        thrown_away = 0
+        # The turn stored after them counts what they used, so the cost per screening stays exact.
+        thrown_away_usage = RunUsage()
         while True:
             self._kicked.discard(candidate_id)
-            await asyncio.sleep(self.settings.chat_debounce_seconds)
+            await asyncio.sleep(wait)
+            wait = self.settings.chat_debounce_seconds
             async with self._locks[candidate_id]:
                 async with self.sessionmaker() as session:
                     candidate = await session.get_one(Candidate, candidate_id)
@@ -565,26 +585,40 @@ class ScreeningService:
                 medium = Medium.VOICE_NOTE if voice_note else Medium.TEXT
                 now = datetime.now(UTC)
                 started = time.perf_counter()
+                if thrown_away < MAX_THROWN_AWAY:
+                    self._running[candidate_id] = None
                 try:
-                    result = await run_turn(
-                        state=state,
-                        application=application_of(candidate),
-                        config=self.config,
-                        candidate_messages=[message.text for message in pending],
-                        history=history_from_turns(
-                            [ModelMessagesTypeAdapter.validate_python(messages) for messages in stored],
-                            self.settings.max_history_messages,
-                        ),
-                        model=self.model,
-                        now=now,
-                        conversation_id=str(candidate_id),
-                        model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
-                        turn_timeout=self.settings.turn_timeout,
-                        usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
-                        # Read from its own column on every turn, so a decision made since the last one counts.
-                        decision=candidate.decided_outcome,
-                        medium=medium,
-                    )
+                    # Ours, because the run's own spans have ended by the time we know whether it was superseded.
+                    with logfire.span("chat run {candidate_id}", candidate_id=candidate_id) as run_span:
+                        result = await run_turn(
+                            state=state,
+                            application=application_of(candidate),
+                            config=self.config,
+                            candidate_messages=[message.text for message in pending],
+                            history=history_from_turns(
+                                [ModelMessagesTypeAdapter.validate_python(messages) for messages in stored],
+                                self.settings.max_history_messages,
+                            ),
+                            model=self.model,
+                            now=now,
+                            conversation_id=str(candidate_id),
+                            model_settings=ModelSettings(request_timeout=self.settings.request_timeout),
+                            turn_timeout=self.settings.turn_timeout,
+                            usage_limits=UsageLimits(request_limit=self.settings.turn_request_limit),
+                            # Read from its own column on every turn, so a decision made since the last one counts.
+                            decision=candidate.decided_outcome,
+                            medium=medium,
+                        )
+                        superseded_at = self._running.pop(candidate_id, None)
+                        run_span.set_attribute("superseded", superseded_at is not None)
+                    if superseded_at is not None:
+                        # Its tools changed only the state in memory, and nothing was sent: the next run starts from
+                        # the same state, and the typing indicator stays on.
+                        thrown_away += 1
+                        thrown_away_usage += result.usage
+                        wait = superseded_at + self.settings.chat_debounce_seconds - time.monotonic()
+                        continue
+                    result = dataclasses.replace(result, usage=result.usage + thrown_away_usage)
                     async with self.sessionmaker() as session, session.begin():
                         turn = await self._record_turn(session, candidate, result, now, started)
                         await session.execute(
@@ -611,7 +645,11 @@ class ScreeningService:
                     notice = await self._tell_failure(candidate, state, pending, error)
                     await self.channel.publish(candidate_id, [*notice, Typing(active=False)])
                     return
+                finally:
+                    # The run failed, which is a failure whether superseded or not: no mark stays behind.
+                    self._running.pop(candidate_id, None)
 
+                thrown_away, thrown_away_usage = 0, RunUsage()
                 events: list[ChatEvent] = [ChatMessage.model_validate(reply) for reply in replies]
                 if result.state.status is not candidate.status:
                     events.append(ChatStatus(status=result.state.status))
