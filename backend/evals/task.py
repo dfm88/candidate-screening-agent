@@ -209,8 +209,10 @@ simulator = Agent(deps_type=Persona, output_type=CandidateTurn, name="candidate_
 @simulator.instructions
 def simulator_instructions(ctx: RunContext[Persona]) -> str:
     persona = ctx.deps
+    # The agent reads the clock in the vacancy's time zone: in UTC, a late evening in Mexico is already tomorrow.
+    now = persona.now.astimezone(CONFIG.locations_by_id[persona.vacancy].tz)
     return f"""You are role-playing a job applicant in a test of a recruiting chat assistant. You applied for a
-delivery driver job and the assistant now screens you by chat. Today is {persona.now:%A %d %B %Y}.
+delivery driver job and the assistant now screens you by chat. Where you live, it's {now:%A %d %B %Y, %H:%M}.
 
 Who you are and how you behave:
 {persona.profile}

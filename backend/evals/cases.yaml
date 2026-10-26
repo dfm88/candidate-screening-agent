@@ -295,6 +295,62 @@ cases:
         license: "yes"
         location_id: not saved
 
+  # A city of ours, not the vacancy's: no "we don't hire there". Tagged faq so the judge checks what's said about it.
+  - name: scripted_es_lives_in_another_city_of_ours
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Beatriz Ortega Ruiz
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: |
+        Beatriz applied for Madrid and answers the area question with a city where the chain hires, but not the
+        vacancy's: Valencia. Nothing is saved and nothing ends the screening: she's asked for her postal code or
+        neighbourhood, never told we don't hire there.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["sí, tengo el carnet B"]
+          provides: [license]
+        - messages: ["vivo en Valencia"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place, faq]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Beatriz Ortega Ruiz
+        license: "yes"
+        location_id: not saved
+
+  # Seen in the demo data on prod (prompt 920a8fed): an English application; after "El Carmen, 46003" the next
+  # question came in Spanish. The exchange as it happened, up to that answer.
+  - name: scripted_en_place_in_spanish_reply_in_english
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Ciara Doyle
+      application_language: en
+      now: 2026-10-26T05:22:00Z
+      profile: |
+        Ciara applied in English and writes in English; she answers the area question with the place's Spanish name
+        and her postal code. The next question stays in English.
+      script:
+        - messages: ["Sure, go ahead."]
+        - messages: ["Yes, that's right."]
+          provides: [full_name]
+        - messages: ["Yes, I have a valid Spanish B licence."]
+          provides: [license]
+        - messages: ["El Carmen, 46003."]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, place]
+      status: in_progress
+      final_language: en
+      answers:
+        full_name: Ciara Doyle
+        license: "yes"
+        location_id: es-vlc-ruzafa
+
   - name: scripted_es_misspelled_place_asked
     inputs:
       vacancy: es-bcn-gracia

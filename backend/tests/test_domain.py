@@ -241,6 +241,8 @@ def test_experience_needs_platforms_unless_there_is_none() -> None:
     assert "platforms" in result.not_saved[FieldName.EXPERIENCE] and FieldName.EXPERIENCE in state.still_to_ask
     state, result = save(NewAnswers(platforms=["didi"]), state=state)
     assert result.saved[FieldName.EXPERIENCE] == "2 years: DiDi Food"
+    _, result = save(NewAnswers(experience_years=1, platforms=["uber"]))
+    assert result.saved[FieldName.EXPERIENCE] == "1 year: Uber Eats"
     state, _ = save(NewAnswers(experience_years=0))
     assert state.is_saved(FieldName.EXPERIENCE)
 

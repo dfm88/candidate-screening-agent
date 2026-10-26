@@ -271,7 +271,8 @@ def describe_saved(state: ScreeningState, config: ClientConfig) -> dict[FieldNam
     if answers.schedule:
         described[FieldName.SCHEDULE] = ", ".join(answers.schedule)
     if answers.experience:
-        years = "years unknown" if answers.experience.years is None else f"{answers.experience.years:g} years"
+        given = answers.experience.years
+        years = "years unknown" if given is None else f"{given:g} {'year' if given == 1 else 'years'}"
         platforms = answers.experience.platforms
         described[FieldName.EXPERIENCE] = years + (f": {', '.join(platforms)}" if platforms else "")
     if answers.start_date:
