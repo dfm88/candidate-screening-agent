@@ -1,8 +1,8 @@
 """Run the eval dataset on model configs and print the arena: one row per config.
 
-    uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash
-    uv run --group evals --env-file .env python -m evals.run --model google-cloud:gemini-3.8-flash \\
-        --fallback openai:gpt-6-luna                                   # the demo config
+    uv run --group evals --env-file .env python -m evals.run --model openai:gpt-5.6-terra
+    uv run --group evals --env-file .env python -m evals.run --model openai:gpt-5.6-terra \\
+        --fallback google:gemini-3.8-flash                             # the demo config
     uv run --group evals --env-file .env python -m evals.run --model A --model B --repeat 2   # the arena
 
 Each --model is one experiment and one row; --fallback and --settings apply to every --model. Without

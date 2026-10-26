@@ -24,7 +24,8 @@ ENV PATH="/app/backend/.venv/bin:$PATH" \
     STATIC_DIR=/app/frontend/dist \
     PORT=8080
 EXPOSE 8080
-# Migrations run at start: acceptable with exactly one instance (see README, "Scaling").
+# Migrations run at start: acceptable with exactly one instance (see docs/production-design.md, "Scaling to 10K
+# candidates a week": with several, they run as a job before the new revision takes traffic).
 # Open chat streams would hold a graceful shutdown forever, and Cloud Run kills the instance 10 s after SIGTERM:
 # close them after 5 s so the app's own shutdown still runs. EventSource reconnects by itself.
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn screening.main:create_app --factory --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*' --timeout-graceful-shutdown 5"]

@@ -121,8 +121,12 @@ elif ! gc secrets describe session-secret >/dev/null 2>&1; then
 fi
 secrets="${secrets},SESSION_SECRET=session-secret:latest"
 # The secret in the URL of the recruiters' MCP server (/mcp/<token>), its only auth: MCP_TOKEN when given (to rotate
-# it), otherwise generated once and kept, so a connector keeps working across redeploys. Never printed: the README
-# copies the URL to the clipboard.
+# it), otherwise generated once and kept, so a connector keeps working across redeploys. Never printed. To copy the
+# deployed URL to the clipboard without printing the token (needs deploy.env and this deployment's gcloud access; works
+# from any folder of the repo):
+#   ( cd "$(git rev-parse --show-toplevel)" && export GCP_PROJECT="$(sed -n 's/^GCP_PROJECT=//p' deploy.env)" CLOUDSDK_CONFIG="$(sed -n 's/^CLOUDSDK_CONFIG=//p' deploy.env)"
+#     url="$(gcloud run services describe candidate-screening-agent --project "$GCP_PROJECT" --region europe-southwest1 --format 'value(status.url)')"
+#     printf '%s/mcp/%s' "$url" "$(gcloud secrets versions access latest --secret mcp-token --project "$GCP_PROJECT")" | pbcopy )
 if [[ -n "${MCP_TOKEN:-}" ]]; then
   log "MCP_TOKEN secret"
   upsert_secret mcp-token "$MCP_TOKEN"
@@ -179,7 +183,7 @@ env_vars="${env_vars};VOICE_RECORDING=${VOICE_RECORDING:-false}"
 
 log "Deploying ${SERVICE} to Cloud Run"
 # Exactly one always-on instance with CPU always allocated: the in-process reminder loop, SSE streams and
-# per-conversation locks all live in that process (scaling out is described in the README).
+# per-conversation locks all live in that process (scaling out is in docs/production-design.md).
 gc run deploy "$SERVICE" --source . --region "$REGION" \
   --service-account "$SA_EMAIL" \
   --add-cloudsql-instances "$connection_name" \
