@@ -109,17 +109,17 @@ Nothing changes in the agent. The adapter renders each paragraph as its own mess
 
 ### The arithmetic
 
-Per completed screening, from the evals: 8 turns and 15 model requests, 70K input tokens with 97% read from the prompt cache, 390 output tokens, and $0.022 on terra; the summary agent's one call isn't included. The eval candidates are synthetic and cooperative, so the turn count is a floor.
+Per completed screening, from terra's row in the model round (`20261025-0939`, its totals over 16 completed screenings): 8.8 turns and 16 model requests, 66K input tokens with 97% read from the prompt cache, 420 output tokens, and $0.0230; the summary agent's one call isn't included. The eval candidates are synthetic and cooperative, so the turn count is a floor.
 
 | Per week, if all 10,000 applicants complete | | Basis |
 |---|---|---|
 | Completed screenings | 10,000 | The brief's volume, as an upper bound: today's calls reach about 40% |
-| Turns | ~80,000 | 8 per screening (evals) |
-| Model requests | ~150,000 + 10,000 summaries | 15 per screening (evals), plus one summary each |
-| Input / output tokens | ~700M / ~4M | 70K / 390 per screening (evals); 97% of input from the cache |
-| Agent cost | ~$220 (about $950 a month) | $0.022 per completed screening (evals) |
-| Peak load | ~0.8 turns/s, ~95 requests/min, ~400K input tokens/min | **Estimate:** 12 active hours a day, the peak hour at 3× the average |
-| Turns running at once at the peak | 2 to 3 | **Estimate:** 0.8 turns/s × 2.6 s (p50) to 3.9 s (p95) per turn (evals) |
+| Turns | ~88,000 | 8.8 per screening (evals) |
+| Model requests | ~160,000 + 10,000 summaries | 16 per screening (evals), plus one summary each |
+| Input / output tokens | ~660M / ~4M | 66K / 420 per screening (evals); 97% of input from the cache |
+| Agent cost | ~$230 (about $1,000 a month) | $0.0230 per completed screening (evals) |
+| Peak load | ~0.9 turns/s, ~100 requests/min, ~400K input tokens/min | **Estimate:** 12 active hours a day, the peak hour at 3× the average |
+| Turns running at once at the peak | 2 to 3.5 | **Estimate:** 0.9 turns/s × 2.6 s (p50) to 3.9 s (p95) per turn (evals, row `20261026-0848` with 49 cases × 1) |
 
 Voice isn't included: ElevenLabs bills calls, transcription and speech on its own, and how many candidates would speak is unknown.
 
@@ -133,7 +133,7 @@ So the model traffic is small: throughput isn't what limits one instance first.
 4. **Migrations** run at container start (the Dockerfile's `alembic upgrade head`), which is safe only with one instance.
 5. **Recruiter metrics** scan every candidate on each request (`service.metrics()` has no time window). At about 500K applications a year, they need a window or a daily rollup.
 
-The database connections aren't the bottleneck. No session is held across a model call: the worker reads, closes the session, runs the turn, then stores it in a new one. So SQLAlchemy's default pool (5 connections + 10 overflow) carries far more than the 2–3 turns running at once.
+The database connections aren't the bottleneck. No session is held across a model call: the worker reads, closes the session, runs the turn, then stores it in a new one. So SQLAlchemy's default pool (5 connections + 10 overflow) carries far more than the 2 to 3.5 turns running at once.
 
 ### What replaces it
 
@@ -154,9 +154,9 @@ The database connections aren't the bottleneck. No session is held across a mode
 
 ### Provider rate limits
 
-- **Before launch:** the estimated peak is ~95 requests and ~400K input tokens a minute. Compare it with the OpenAI organization's limits for terra and the Gemini API project's; this repo doesn't record either.
+- **Before launch:** the estimated peak is ~100 requests and ~400K input tokens a minute. Compare it with the OpenAI organization's limits for terra and the Gemini API project's; this repo doesn't record either.
 - **Bursts of 429s** go to the fallback, since `FallbackModel` moves on any API error, rate limits included.
-- **A sustained limit** moves all traffic to the fallback, slower (p50 4.0 s per turn against 2.6 s) and 2.6× the cost per screening. The fallback-rate alert (below) catches it.
+- **A sustained limit** moves all traffic to the fallback, slower (p50 4.0 s per turn against 2.6 s) and about 2.5× the cost per screening. The fallback-rate alert (below) catches it.
 - **Dispatch limits** in Cloud Tasks keep us under the provider's, so a spike waits a few seconds in the queue instead of failing turns.
 - **EU processing:** Gemini on Vertex AI needs reserved capacity (Provisioned Throughput) first ([README, model choice](../README.md#why-gpt-56-terra-with-gemini-38-flash-as-the-fallback)).
 
@@ -192,13 +192,13 @@ Thresholds are proposals, to tune on real traffic.
 | Review rate | Turns that complete a screening (`status_before` → `status_after`), by `outcome` | A prompt or model change shifts outcomes and the recruiters' load | A day at 2× the trailing 7-day rate |
 | p95 per turn | `screening turn` span duration | 3.9 s in the evals; the turn deadline is 35 s | Over 8 s for 15 min |
 | Reminder loop | A heartbeat per tick, and overdue reminders | No reminders, no retries | No tick in 5 min, or a reminder 10 min overdue outside quiet hours |
-| Daily cost | Sum of `operation.cost` over 24 h | A runaway loop, a stuck fallback, a price change | Over 2× completed screenings × $0.022; the GCP budget alert stays as the backstop |
+| Daily cost | Sum of `operation.cost` over 24 h | A runaway loop, a stuck fallback, a price change | Over 2× completed screenings × $0.023; the GCP budget alert stays as the backstop |
 
 The reminder loop's alert needs a small addition, since a tick logs only when it did something and silence can mean nothing was due. Each tick records a counter, plus two gauges read from the database (overdue reminders, the oldest pending message).
 
 ### The evals as a gate
 
-- **Prompt changes:** every change to the prompt version runs the simulated set before it merges. The version hashes the instructions, the model settings, the client config and the tool code, so an FAQ edit counts. The gate is the deterministic checks at 1.00 (as today), the foreign-license case 5/5, and judge scores within noise of the baseline. About $1 a run on terra, judge included.
+- **Prompt changes:** every change to the prompt version runs the simulated set before it merges. The version hashes both agents' instructions and model settings (the screening agent's and the summary agent's), `spoken.md` and `live_call.md`, the whole client config and the tool code, so an FAQ edit counts. The gate is the deterministic checks at 1.00 (as today), the foreign-license case 5/5, and judge scores within noise of the baseline. A run of every case costs about $2 with the judge: about $1 for the agent and the simulator, about $1 for the judge.
 - **Model versions** go through the same gate.
 - **Production failures:** each becomes a scripted case, then the fix (AGENTS.md), rewritten with made-up details: real candidate text never goes into the eval set.
 - **Versioned turns:** every turn records its prompt version, so the alerts can be split by version, and a regression shows against the change that brought it.

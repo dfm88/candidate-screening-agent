@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     # The whole turn: room for two fallbacks in a two-request turn (two primary timeouts, plus the fallback at its p99
     # in the evals, 7 s, twice: 34 s).
     turn_timeout: float = 35
-    # Model requests per turn. The evals' largest legitimate turn needed 5 (a postal code, a request for a person and a
-    # question in one message); a runaway loop of invented saves needed 9.
+    # Model requests per turn. The most a turn needed in the evals' arena is 5, gpt-6-luna's (a postal code, a request
+    # for a person and a question in one message); terra's is 4.
     turn_request_limit: int = 7
     # How long a burst of candidate messages may take to settle before one turn answers them all.
     chat_debounce_seconds: float = 1.5

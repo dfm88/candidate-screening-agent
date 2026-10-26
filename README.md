@@ -12,7 +12,7 @@ Read first: [Try the demo](#try-the-demo), [Architecture](#architecture), [Key d
 
 The deployed app's URL, the access code, the recruiter password and the MCP URL come with the submission. None of them is in this repo.
 
-1. **Apply** at `/apply`, with the access code and made-up details. The confirmation opens the chat, or shows a QR code to continue on a phone.
+1. **Apply** at `/apply`, with the access code and made-up details. The confirmation shows a "Continue in the chat" button, and a QR code to continue on a phone.
 2. **Screen:** chat, send a voice note (the mic next to Send) or call (the call button at the top of the chat).
 3. **Review:** open the candidate in the recruiter tool at `/recruiter`, signed in with any name and the password.
 
@@ -58,7 +58,7 @@ flowchart LR
 3. **Debounce.** The conversation's one worker waits 1.5 s (`CHAT_DEBOUNCE_SECONDS`), then answers everything pending in one turn. A message that arrives mid-turn makes it run again with that message ([decision 5](#key-design-decisions)).
 4. **One turn.** The agent reads the stored history, a context block with the saved state, and the new messages. Its tools check what we own (service areas, dates) and save into a copy of the state.
 5. **Code decides.** `finish_screening` computes the outcome from the saved state ([`domain.py`](backend/src/screening/domain.py)); the model only words it.
-6. **Store, then publish.** The turn (model messages, state, replies, prompt version, models, usage) commits in one transaction, then the replies go out over SSE through the channel adapter ([`channels.py`](backend/src/screening/channels.py)). A failed turn stores only its error, and the messages stay pending ([Timeouts, retries and limits](#timeouts-retries-and-limits)).
+6. **Store, then publish.** The turn (model messages, state, replies, prompt version, models, usage) commits in one transaction, then the replies go out over SSE through the channel adapter ([`channels.py`](backend/src/screening/channels.py)). A failed turn stores its error and sends the "give me a moment" template once; the messages stay pending ([Timeouts, retries and limits](#timeouts-retries-and-limits)).
 7. **Summary.** When the screening ends, a second agent writes the recruiter's caveats and notes about the candidate. The key data (every answer, the outcome and its reasons) are built by code from the saved state.
 
 **Around it, in the same app:**
@@ -84,7 +84,7 @@ flowchart LR
   - `finish_screening()`: the outcome, computed by code from the saved state (decision 2). It refuses while answers are missing.
   - `load_capability(id)`: PydanticAI's own; loads one topic of the job's facts (below).
 - *Rejected:* a form engine, or a state machine with a model call per step.
-- *Limit:* the behaviour is measured, not guaranteed. Every prompt change runs the simulated set (about $1 a run on terra), and each new failure becomes an eval case before the fix.
+- *Limit:* the behaviour is measured, not guaranteed. Every prompt change runs the simulated set (about $1 a run on terra, without the judge), and each new failure becomes an eval case before the fix.
 - **The job's facts work the same way.**
   - *Choice:* the job's facts (pay, shifts, vehicle, documents, how hiring works, where we hire) are five topics, plus one rendered from the locations in the vacancy's country. Each is a deferred capability that the agent loads when a question needs it (`load_capability`), so the prompt carries the list of topics, not the answers.
   - *Rejected:* retrieval over embeddings, for a few kilobytes of text that a recruiter edits in one YAML file.
@@ -108,13 +108,13 @@ flowchart LR
   - Each turn starts with a context block of values: saved, unclear, still to ask, review flags, the outcome, and the recruiter's decision from its own column.
   - The history is kept too, append-only, for the conversation's tone and the provider's prompt cache (97% of input read from it on terra). It isn't the record.
 - *Rejected:* the history as the only memory, or a model-written running summary.
-- *Limit:* the history is cut to the last 50 messages, by whole turns (about 12 turns). That's enough for a screening (8 turns on average in the evals), not for a months-long relationship.
+- *Limit:* the history is cut to the last 50 messages, by whole turns (about 12 turns). That's enough for a screening (about 9 turns per completed screening in the evals), not for a months-long relationship.
 
 **4. A turn is stored whole, or not at all.**
 - *Problem:* a deploy, a crash or a timeout can stop a turn halfway.
 - *Choice:*
   - Tools change only an in-memory copy of the state. The turn's model messages, state and replies commit in one transaction after the run.
-  - A stopped turn leaves only its error, and the candidate's messages stay pending. Their next message, a restart or the timed retry runs it again.
+  - A turn that fails stores only its error, and the "give me a moment" template once; one stopped by a deploy or a crash stores nothing. Either way the candidate's messages stay pending, and their next message, a restart or the timed retry runs it again.
   - A voice turn cut off by the candidate is discarded whole, for the same reason.
 - *Rejected:* durable execution per step (PydanticAI supports Temporal, DBOS and Prefect), a second system to run for turns of about 3 s whose tools have no outside effects.
 - *Limit:* a re-run repeats the model calls and may word the reply differently. It stays safe only while tools touch nothing outside the database transaction. Booking a slot or calling the ATS would need an outbox ([ATS integration](docs/production-design.md#auth-retries-and-field-mapping)).
@@ -142,9 +142,9 @@ flowchart LR
 
 **7. The model, chosen by evals.**
 - *Problem:* in a chat, latency matters as much as quality. And a model that invents answers is out at any price.
-- *Choice:* GPT-5.6 terra with reasoning off, and Gemini 3.8 Flash on another provider as the fallback. On the shipped prompt, every deterministic check is at 1.00 but `regional_terms` (0.98), with 2.6 s per turn at p50 and 3.9 s at p95; $0.022 per completed screening in the model round. [The runs](#why-gpt-56-terra-with-gemini-38-flash-as-the-fallback)
+- *Choice:* GPT-5.6 terra with reasoning off, and Gemini 3.8 Flash on another provider as the fallback. On the shipped prompt, every deterministic check is at 1.00 but `regional_terms` (0.98), with 2.6 s per turn at p50 and 3.9 s at p95; $0.023 per completed screening in the model round. [The runs](#why-gpt-56-terra-with-gemini-38-flash-as-the-fallback)
 - *Rejected:*
-  - gpt-6-luna: 18× cheaper, but it saved answers the candidate never gave.
+  - gpt-6-luna: 19× cheaper, but it saved answers the candidate never gave.
   - Claude Haiku 5.5: failed the license gate.
   - Gemini on Vertex AI `eu`, for the demo ([why](#why-gpt-56-terra-with-gemini-38-flash-as-the-fallback)).
 - *Limit:* the demo's data leaves the EU; real candidates need the Vertex path with reserved capacity.
@@ -265,7 +265,7 @@ A slow model must not leave a candidate waiting. A live turn has three bounds, s
 |---|---|---|
 | `REQUEST_TIMEOUT` | 10 s | One deadline per request to one model, over all the provider SDK's attempts (PydanticAI's `request_timeout`). Then `FallbackModel` moves to the next model, with a fresh deadline. |
 | `TURN_TIMEOUT` | 35 s | The whole turn (`agent.run(timeout=…)`). `FallbackModel` tries the primary first on every request, so a two-request turn that falls back twice takes 10 + 7 + 10 + 7 s, with the fallback at its eval p99. |
-| `TURN_REQUEST_LIMIT` | 7 | Model requests per turn (`UsageLimits.request_limit`). A legitimate turn in the evals needed at most 5 (a postal code, a request for a person and a question in one message); one that needed 9 was a model saving invented answers in a loop. |
+| `TURN_REQUEST_LIMIT` | 7 | Model requests per turn (`UsageLimits.request_limit`). The most a turn needed in `arena.md` is 5, gpt-6-luna's (a postal code, a request for a person and a question in one message); terra's is 4. |
 
 Retries, from the inside out:
 - **Provider SDK:** its defaults, inside the request deadline. PydanticAI's OpenAI and Anthropic clients retry twice; its Google client doesn't.
@@ -274,7 +274,7 @@ Retries, from the inside out:
 
 A failed turn (every model failed, it timed out, it hit the request limit, or storing it failed) sends the "give me a moment" template once. The messages stay pending for the candidate's next message, a restart or the timed retry.
 
-There's no per-conversation budget in code; the request limit bounds one turn only. A GCP budget alert ([Deployment](#deployment-gcp)) and a Logfire alert on model cost watch the spend. The summary agent gets the same request deadline. Evals run without deadlines or a fallback, so the latency they report is the model's own.
+There's no per-conversation budget in code; the request limit bounds one turn only. A GCP budget alert ([Deployment](#deployment-gcp)) and a Logfire alert on model cost watch the spend. The summary agent gets the same request deadline. Evals run without deadlines, and without a fallback unless `--fallback` gives one (as in the final run's demo config), so the latency they report is the model's own.
 
 ## Timed work: reminders, abandoned chats, retries
 
@@ -349,7 +349,7 @@ Measured with `evals.voice_driver`, a simulated candidate speaking through Eleve
 
 \* ElevenLabs sent the transcript again 1.7 s late, with a word added; our share of that turn was 0.96 s.
 
-At the median, ElevenLabs' recognition and turn detection take about 0.4 s, our first text comes 0.9 s later, and speech starts about 0.3 s after that. A tool turn waits about another 1.45 s, for the tool and a second model request. terra is the fastest model that passed the license gate (request p50 1.3 s, against 2.0 s for Gemini 3.8 Flash), so those two requests set the floor. Accepted for the demo: a median under 3 s, and nothing over 4 s on our side.
+At the median, ElevenLabs' recognition and turn detection take about 0.4 s, our first text comes 0.9 s later, and speech starts about 0.3 s after that. A tool turn's median is 0.96 s above a turn without one (2.80 s against 1.84 s), for the tool and a second model request. terra is the fastest model that passed the license gate (request p50 1.3 s, against 2.0 s for Gemini 3.8 Flash), so those two requests set the floor. Accepted for the demo: a median under 3 s, and nothing over 4 s on our side.
 
 **No line before a tool call.** Voice agents often say a short line while a tool runs ("Entendido, fines de semana.", "Got it, weekends."). Speech Engine holds it, since its TTS starts at about 120 buffered characters or on a flush and `agent_response` exposes neither; lines of up to 53 characters waited for the rest of the reply. The line also caused two failures (terra, history built as in a call):
 - the model said it and stopped, as in prod ("Got it, afternoons." and nothing more), in 10 of 530 call turns;
@@ -357,12 +357,12 @@ At the median, ElevenLabs' recognition and turn detection take about 0.4 s, our 
 
 Without the line, there was no dead end in 577 call turns and no JSON in 706. So the model calls the tool first. The reply after it says back, in a few words, what speech recognition can get wrong (a name, a place, a number, a date), so the candidate can correct a mishearing, then asks what's next. A postal code is read back and saved once the candidate confirms it; a yes or no, or an option from a list, isn't said back. A wait ("let me check my postcode") is answered by waiting; if the call ends on it, the chat picks up ([above](#the-record-is-what-the-candidate-heard)). The safety net stays. A turn that asks nothing and calls no tool gets one more request (`leaves_something_to_answer`, an output validator), which keeps a wait.
 
-On the shipped prompt's voice cases (`f32df8d2`, arena row `20261026-0848`, 9 cases × 3), every check is at 1.00 except message shape, at 0.98 (four spoken recaps over 40 words, with the digits spelled out). All 6 waits got a reply that asked nothing, and all 6 chats picked up after the call with the question. No reply was read aloud as JSON, and the safety net fired only on those 6 waits. `varied_openings` is at 0.96.
+On the shipped prompt's voice cases (`f32df8d2`, arena row `20261026-0848` with 9 cases × 3), every check is at 1.00 except message shape, at 0.98 (four spoken recaps over 40 words, with the digits spelled out). All 6 waits got a reply that asked nothing, and all 6 chats picked up after the call with the question. No reply was read aloud as JSON, and the safety net fired only on those 6 waits. `varied_openings` is at 0.96.
 
 ### Limits
 
 - A voice turn that fails (every model down, or out of time) says the chat's "Dame un momento, por favor." ("Give me a moment, please."). The candidate's next words get a turn that answers both.
-- Nothing is said while a tool runs (about 1.45 s at the median, above). The next step for production is a filler made by code or by the voice platform when the model is slow, so the model calls the tool first.
+- Nothing is said while a tool runs, about 1 s more at the median (above). The next step for production is a filler made by code or by the voice platform when the model is slow, so the model calls the tool first.
 - An FAQ topic is loaded again for each question about it in a call. A call's history is rebuilt from ElevenLabs' transcript on every turn, and the transcript holds what was said, not tool calls. So a second question on a topic the call already loaded costs one more request (terra's median is 1.3 s); checked with terra, 3 of 3. A topic loaded in the text chat before the call stays loaded.
 
 ## Evals
@@ -371,11 +371,11 @@ The process design is enforced by evals (`backend/evals/`, Pydantic Evals), not 
 
 - **Deterministic checks** carry the process rules and decide the ranking. They check the outcome and review reasons, the saved answers, `grounded` (nothing saved before the candidate gave it, the failure that ruled luna out), knockouts asked first, nothing asked again, at most two tries per field, the FAQ topic a question needs loaded (`faq_topics`), message shape (at most 3 messages of 40 words, one question, last), no acknowledgement sent on its own, a screening left open ending on our question (`open_ends_asking`, from a call that stalled), a request to wait answered with nothing asked (`wait_honoured`), the language saved at the end, the country's regional terms and gender-neutral wording. `varied_openings` is a score, not a check: the share of a call's replies that don't open like the one before.
 - **The LLM judge** scores what code can't check. That's tone, naturalness and language quality (including whether each reply follows the candidate's language), `saved_values` (each saved value against what the candidate said, the date and the country), `faq_answers` (answers taken only from the topics loaded), `summary` (each item from the transcript, about the candidate, adding to the key data) and `decision` (no reply contradicting a recruiter's decision). A scripted case is a fragment, so only its saved values, FAQ answers and decision are judged.
-- **The judge's model** defaults to OpenAI's `gpt-6-luna`; the runs reported here used `--judge anthropic:claude-opus-5-5` at low effort (`JUDGE_SETTINGS`). It's a family neither config belongs to, and the judge's own mistakes were the main noise we saw, so it gets the strongest model. It runs offline, with about 220 judged calls and about $1 per run of every case. A judge of the row's own family is marked in the table.
+- **The judge's model** defaults to OpenAI's `gpt-6-luna`, which judged the model-choice round (rows `20261025-0939` and `-1031`): that's why terra and luna carry the `*` there. The final run (`20261025-2156`) and each run of every case since used `--judge anthropic:claude-opus-5-5` at low effort (`JUDGE_SETTINGS`), a family neither config belongs to; the judge's own mistakes were the main noise we saw, so it gets the strongest model. It runs offline, with about 220 requests to the judge and about $1 per run of every case. A judge of the row's own family is marked in the table.
 - **Per config:** the thinking config the provider receives, p50/p95 latency per turn, cost per completed screening (genai-prices), the share of input read from the prompt cache, cache collapses flagged by PydanticAI's instrumentation, and which model answered each turn.
 - **Scripted cases** replay an observed failure, with fixed candidate messages instead of the simulator, checked on the state after the last message. They're cheap to rerun. The simulated set covers whole conversations and runs before a prompt change is committed.
 
-The runs aren't deterministic, since the simulator and the agent both sample. With about 20 runs per row, one run moves a rate by about 0.05; on the same prompt, 3.8 Flash scored 0.72 and 0.89 on `no_standalone_ack` in two runs, and its p95 ranged from 8 to 16 s. And the process checks are code, but they read the simulator's labels (`asked_about`), so a wrong label shows up as a failure. Rank on the real errors in the transcripts, not on decimals.
+The runs aren't deterministic, since the simulator and the agent both sample. With about 20 runs per row, one run moves a rate by about 0.05; on prompt `c0da8e5d`, 3.8 Flash scored 0.72 on `no_standalone_ack` with a p95 of 10.7 s (row `20261024-1938`), then 0.89 with a p95 of 7.8 s (`-1944`, with a fallback configured that answered none of its requests). And the process checks are code, but they read the simulator's labels (`asked_about`), so a wrong label shows up as a failure. Rank on the real errors in the transcripts, not on decimals.
 
 Known issues, seen in the demo data on prod (prompt `f32df8d2`):
 - A Spain glossary term can slip into an English question ("jornada completa", Spain's term for full-time).
@@ -415,25 +415,25 @@ The round on 2026-10-25 (prompt `da96a191`; full tables in [`arena.md`](backend/
 | p50 / p95 per turn | 2.6 s / 3.8 s | 4.0 s / 7.0 s | 3.0 s / 5.5 s |
 | Request p99 | 2.4 s | 7.0 s | 3.3 s |
 | Input read from the prompt cache | 97% | 7% | 97% |
-| Cost per completed screening | $0.022 | $0.057 | $0.001 |
+| Cost per completed screening | $0.0230 | $0.0566 | $0.0012 |
 
 \* judged by a model of the same family.
 
-- **Invented answers:** gpt-6-luna and Haiku 5.5 at low effort saved answers the candidate never gave, such as a license "yes" during the name question. In an earlier run, luna invented a whole profile from "Sure, go ahead" and closed it as qualified. In that round the checks caught it only when the field came up again, so luna's 0.99 understates it; that's why it's out despite costing 18× less than terra. The `grounded` check added since catches it on the turn it happens.
-- **terra against 3.8 Flash:** a tie on the checks and the judge. terra is faster and 2.6× cheaper, mostly because OpenAI's prompt cache holds the append-only history (97% of input), while 3.8 Flash's best-effort implicit cache read 7%. In that round 3.8 Flash's misses were style only: two questions in a turn, a "Gracias, Luis." ("Thanks, Luis.") sent on its own.
+- **Invented answers:** gpt-6-luna and Haiku 5.5 at low effort saved answers the candidate never gave, such as a license "yes" during the name question. In an earlier run, luna invented a whole profile from "Sure, go ahead" and closed it as qualified. In that round the checks caught it only when the field came up again, so luna's 0.99 understates it; that's why it's out despite costing 19× less than terra. The `grounded` check added since catches it on the turn it happens.
+- **terra against 3.8 Flash:** a tie on the checks and the judge. terra is faster and about 2.5× cheaper, mostly because OpenAI's prompt cache holds the append-only history (97% of input), while 3.8 Flash's best-effort implicit cache read 7%. In that round 3.8 Flash's misses were style only: two questions in a turn, a "Gracias, Luis." ("Thanks, Luis.") sent on its own.
 - **The fallback** is 3.8 Flash, on another provider, so one outage can't take out both. Its request p99 (7.0 s) fits the 10 s request deadline.
-- **The final run** (prompt `012123f5`; 32 cases × 2, 20 of them scripted replays of observed failures; judged by Claude Opus 5.5 at low effort). The demo config scored 1.00 on every check, and the fallback answered none of its 657 model requests. 3.8 Flash alone missed where the scripted cases press:
+- **The final run** (prompt `012123f5`; 32 cases × 2, 20 of them scripted replays of observed failures; judged by Claude Opus 5.5 at low effort). The demo config (row `20261025-2156`) scored 1.00 on every check, and the fallback answered none of its 657 model requests. 3.8 Flash alone (row `20261025-2205`) missed where the scripted cases press:
   - it saved a misspelt place ("vivo en Malasañna") as Malasaña without asking, 2 of 2, where the agent is told to check first;
   - after the recruiter's final "qualified", it said the team would take a new answer into account "cuando revise tu caso" ("when it reviews your case"), 2 of 2;
   - it called candidates "repartidora" or "repartidor" (a delivery driver, feminine or masculine) 10 times, guessing their gender from the name; terra never did.
 
   They matter because 3.8 Flash answers the turns terra fails. The evals now check all three.
-- **The shipped version** (prompt `f32df8d2`, arena row `20261026-0848`): all 49 cases once on terra (12 simulated, 37 scripted). Every deterministic check is at 1.00 but `regional_terms`, at 0.98: a Mexican candidate wrote "coche" (car; "carro" in Mexico), and the recap repeated their word. 2.6 s per turn at p50, 3.9 s at p95 and a request p99 of 2.5 s; 97% of input came from the prompt cache, with no cache collapse.
+- **The shipped version** (prompt `f32df8d2`, arena row `20261026-0848` with 49 cases × 1): every case once on terra (12 simulated, 37 scripted). Every deterministic check is at 1.00 but `regional_terms`, at 0.98: a Mexican candidate wrote "coche" (car; "carro" in Mexico), and the recap repeated their word. 2.6 s per turn at p50, 3.9 s at p95 and a request p99 of 2.5 s; 97% of input came from the prompt cache, with no cache collapse.
   - Judged by Claude Opus 5.5 at low effort: naturalness 0.90, and 1.00 on language and saved values. `decision` is 0.00 on its one case. After a recruiter's "qualified", the candidate says the licence expired last month, and the reply says the team will see it and a valid licence is needed to deliver; the judge read that as contradicting the decision. The same reply is the one miss in `faq_answers` (0.93), for a licence rule that isn't in a loaded topic.
   - Tone scored 0.85. Of the 8 scores below 1.00, three call a correct recap date invented, because the style judges aren't given today's date (`saved_values`, which is, scored 1.00). One says a correction at the recap was ignored, though it was saved, one faults the second try at the licence that the process design asks for, and three are style.
   - The summary scored 0.91. Of its 12 summaries, one adds a note that only restates the talent-pool answer, and one leaves out that the candidate is sometimes free at night.
-- **Vertex `eu`** wasn't used for the demo. The same day, 3.8 Flash on Vertex `eu` (dynamic shared quota) took up to 85 s per turn, then requests hung for 40 minutes; the Gemini API answered in about 2 s. The EU path needs reserved capacity first.
-- **The round before** (2026-10-24, EU models only) ruled out Gemini 3.5 Flash, which saved the name before the candidate confirmed it, and 3.5 Flash-Lite, for a wrongful license knockout.
+- **Vertex `eu`** wasn't used for the demo. The same day, 3.8 Flash on Vertex `eu` (dynamic shared quota) had a p95 of 85 s per turn (row `20261025-0935`, prompt `da96a191`), then requests hung for 40 minutes; the Gemini API answered in about 2 s. The EU path needs reserved capacity first.
+- **The round before** (2026-10-24: Gemini on Vertex AI `eu`, and gpt-6-luna) ruled out Gemini 3.5 Flash, which saved the name before the candidate confirmed it, and 3.5 Flash-Lite, for a wrongful license knockout.
 
 ## Deployment (GCP)
 

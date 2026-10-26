@@ -13,7 +13,7 @@ Guidance for any coding agent (or human) working in this repository.
 
 - **The prompt drives the conversation; code owns the facts and the outcome.** One conversational agent follows the process design through its instructions and is verified by evals. Its tools validate what we own (service areas, dates), save it, and compute the outcome from the saved state. No model output sets an outcome or a status on its own.
 - **`unknown` is not `false`.** No thresholds the process design doesn't define. No tone adaptation based on who the candidate seems to be.
-- **Templates only where the channel requires them:** the first message and the reminders, which fall outside WhatsApp's 24-hour window. The agent writes everything else. Quick replies come from code (for now only Start / Not interested on the first message).
+- **Templates only where the channel or a failure requires them:** the first message, the reminders and the recruiter's decision, which fall outside WhatsApp's 24-hour window, and the "give me a moment" notice, since the model is what's failing. The agent writes everything else. Quick replies come from code (for now only Start / Not interested on the first message).
 - **The channel is an adapter.** The core speaks `inbound message → outbound messages` (template or free text). The web chat is the first adapter.
 - **Client configuration is data** (locations, service areas, locales, persona, timings, FAQ, templates). The screening schema is a typed Pydantic model, not a form engine.
 
@@ -62,7 +62,7 @@ Write tests where they pay off:
 ## Observability and privacy
 
 - Logfire instruments FastAPI, SQLAlchemy and PydanticAI, and adds a span per conversation turn with the ids, state transitions and prompt version. `send_to_logfire='if-token-present'`: the app and tests run without a token.
-- LLM prompt and completion content is candidate PII. Its logging is a config switch, off by default in deployed environments.
+- LLM prompt and completion content is candidate PII. Its logging is a config switch (`LLM_CONTENT_LOGGING`), off by default in code. `deploy.sh` turns it on for the demo, whose data is synthetic; for a real client it stays off unless there's a DPA and a legal basis.
 - Product analytics (funnel, drop-off) come from the database, not from Logfire.
 
 ## Cloud access (GCP)
