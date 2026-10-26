@@ -35,6 +35,7 @@ const COPY = {
     micDenied: 'Permite el micrófono para grabar un audio.',
     listen: 'Escuchar',
     stop: 'Parar',
+    byPhone: 'Esta conversación sigue por teléfono.',
   },
   en: {
     virtual: (client: string) => `${client}'s virtual assistant`,
@@ -57,6 +58,7 @@ const COPY = {
     micDenied: 'Allow the microphone to record a voice note.',
     listen: 'Listen',
     stop: 'Stop',
+    byPhone: 'This screening continues by phone.',
   },
 } as const
 
@@ -123,6 +125,9 @@ export default function ChatPage() {
   const [playing, setPlaying] = useState<number | null>(null)
   // The candidate's last voice note, until our reply to it arrives and plays by itself.
   const replyTo = useRef<number | null>(null)
+  // A call in progress locks the chat: a message typed now would run a text turn between the call's turns, and its
+  // reply would land here while the candidate is on the phone.
+  const [calling, setCalling] = useState(false)
 
   const speak = useCallback(
     (messageId: number) => {
@@ -162,7 +167,8 @@ export default function ChatPage() {
   const closed = (status ?? session.data.status) === 'withdrawn'
   const last = messages.at(-1)
   // Suggested replies only while they're the latest thing in the chat; typing always works too.
-  const quickReplies = !closed && last?.author === 'assistant' && waiting.length === 0 ? last.quick_replies : []
+  const quickReplies =
+    !closed && !calling && last?.author === 'assistant' && waiting.length === 0 ? last.quick_replies : []
 
   async function send(text: string, clientId: string = crypto.randomUUID()) {
     setNotice(null)
@@ -226,7 +232,7 @@ export default function ChatPage() {
             {!connected ? copy.reconnecting : typing ? copy.typing : copy.virtual(session.data.client_name)}
           </p>
         </div>
-        {session.data.voice && !closed && <CallButton token={token} copy={copy} />}
+        {session.data.voice && !closed && <CallButton token={token} copy={copy} onLive={setCalling} />}
       </header>
 
       <div role="log" aria-live="polite" className="flex-1 space-y-2 overflow-y-auto px-3 py-4">
@@ -286,6 +292,7 @@ export default function ChatPage() {
       </div>
       <audio ref={player} onEnded={() => setPlaying(null)} onError={() => setPlaying(null)} />
       {notice && <p className="bg-white px-4 pt-2 text-xs text-red-700">{notice}</p>}
+      {calling && !closed && <p className="bg-white px-4 pt-2 text-center text-sm text-stone-600">{copy.byPhone}</p>}
 
       {closed ? (
         <p className="bg-white px-4 py-3 text-center text-sm text-stone-500">{copy.closed}</p>
@@ -297,19 +304,26 @@ export default function ChatPage() {
             placeholder={copy.placeholder}
             maxLength={2000}
             aria-label={copy.placeholder}
-            className="flex-1 rounded-full border border-stone-300 px-4 py-2 focus:border-brand-500 focus:outline-none"
+            disabled={calling}
+            className="flex-1 rounded-full border border-stone-300 px-4 py-2 focus:border-brand-500 focus:outline-none disabled:bg-stone-100"
           />
-          {session.data.voice_notes && (
-            <NoteRecorder
-              copy={copy}
-              onStart={startNote}
-              onNote={(audio) => void sendNote(audio)}
-              onDenied={() => setNotice(copy.micDenied)}
-            />
-          )}
+          {session.data.voice_notes &&
+            // Unmounted rather than disabled, so a note being recorded is dropped and the microphone freed.
+            (calling ? (
+              <button type="button" disabled aria-label={copy.record} className="px-1 text-xl opacity-50">
+                🎤
+              </button>
+            ) : (
+              <NoteRecorder
+                copy={copy}
+                onStart={startNote}
+                onNote={(audio) => void sendNote(audio)}
+                onDenied={() => setNotice(copy.micDenied)}
+              />
+            ))}
           <button
             type="submit"
-            disabled={!draft.trim()}
+            disabled={calling || !draft.trim()}
             className="rounded-full bg-brand-600 px-4 font-semibold text-white disabled:opacity-50"
           >
             {copy.send}
@@ -438,7 +452,15 @@ function NoteRecorder({
 
 // A live voice call. ElevenLabs does the speech; our server answers each turn, and the turns show up in this chat through
 // the same event stream. Its SDK loads on the first tap: most candidates type, and it's most of the bundle.
-function CallButton({ token, copy }: { token: string; copy: (typeof COPY)[Language] }) {
+function CallButton({
+  token,
+  copy,
+  onLive,
+}: {
+  token: string
+  copy: (typeof COPY)[Language]
+  onLive: (live: boolean) => void
+}) {
   const call = useRef<VoiceConversation | null>(null)
   const [status, setStatus] = useState<CallStatus>('disconnected')
   const [failed, setFailed] = useState(false)
@@ -446,6 +468,7 @@ function CallButton({ token, copy }: { token: string; copy: (typeof COPY)[Langua
 
   // Leaving the page hangs up.
   useEffect(() => () => void call.current?.endSession(), [])
+  useEffect(() => onLive(live), [live, onLive])
 
   async function toggle() {
     if (live) {
