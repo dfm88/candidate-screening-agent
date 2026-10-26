@@ -99,13 +99,7 @@ A recruiter can ask their own assistant (Claude, ChatGPT) who is ready to call, 
   - No chat link: it carries the chat token, which is the candidate's own access to their chat.
 - `get_metrics()`: the metrics row.
 
-**Connecting an assistant.** Every client takes the server's URL, `https://SERVICE_URL/mcp/<token>`, with no sign-in. To copy the deployed URL to the clipboard without printing the token, run this from the repo root:
-
-```bash
-( export GCP_PROJECT="$(sed -n 's/^GCP_PROJECT=//p' deploy.env)" CLOUDSDK_CONFIG="$(sed -n 's/^CLOUDSDK_CONFIG=//p' deploy.env)"
-  url="$(gcloud run services describe candidate-screening-agent --project "$GCP_PROJECT" --region europe-southwest1 --format 'value(status.url)')"
-  printf '%s/mcp/%s' "$url" "$(gcloud secrets versions access latest --secret mcp-token --project "$GCP_PROJECT")" | pbcopy )
-```
+**Connecting an assistant.** Every client takes the server's URL, `https://SERVICE_URL/mcp/<token>`, with no sign-in. The token is the credential, so the URL is not in this repo: reviewers get it with the submission. Paste it as the server URL in any of these:
 
 - **Claude, web and desktop app:**
   1. Go to Customize → Connectors and click **Add custom connector**.
@@ -113,7 +107,7 @@ A recruiter can ask their own assistant (Claude, ChatGPT) who is ready to call, 
   3. In a chat, the **+** menu → Connectors turns it on or off.
 
   On Team and Enterprise plans, an Owner adds it under Organization settings → Connectors (Add → Custom → Web), and each member clicks **Connect**. Claude calls the server from Anthropic's cloud, so it needs the deployed HTTPS URL, not localhost.
-- **Claude Code, the CLI:** `claude mcp add --transport http --scope user screening "$(pbpaste)"`, then `claude mcp list` (or `/mcp` in a session) should show it connected.
+- **Claude Code, the CLI:** `claude mcp add --transport http --scope user screening "<URL>"`, then `claude mcp list` (or `/mcp` in a session) should show it connected.
   - `--scope user` keeps the URL in `~/.claude.json`. Never use `--scope project`: it writes the URL, token included, to a `.mcp.json` meant for version control.
   - Against a local app, set `MCP_TOKEN` in `backend/.env` and use `http://localhost:8000/mcp/<token>`.
 - **ChatGPT, on the web (not tried):**
@@ -126,13 +120,23 @@ A recruiter can ask their own assistant (Claude, ChatGPT) who is ready to call, 
 
 Then ask, for example, "Who's ready to call in Madrid, and what are their phone numbers?"
 
+**For the owner: the deployed URL.** This copies it to the clipboard without printing the token (it needs `deploy.env` and the gcloud access of the deployment; it works from any folder of the repo):
+
+```bash
+( cd "$(git rev-parse --show-toplevel)" && export GCP_PROJECT="$(sed -n 's/^GCP_PROJECT=//p' deploy.env)" CLOUDSDK_CONFIG="$(sed -n 's/^CLOUDSDK_CONFIG=//p' deploy.env)"
+  url="$(gcloud run services describe candidate-screening-agent --project "$GCP_PROJECT" --region europe-southwest1 --format 'value(status.url)')"
+  printf '%s/mcp/%s' "$url" "$(gcloud secrets versions access latest --secret mcp-token --project "$GCP_PROJECT")" | pbcopy )
+```
+
+A redeploy keeps the URL: `deploy.sh` generates the token once and only replaces it when `MCP_TOKEN` is given.
+
 **How it runs.**
 - **Stateless, with JSON responses:** Cloud Run has no sticky sessions, and each tool call is one request and one answer.
 - **The app's lifespan runs the SDK's session manager,** because Starlette never runs a mounted app's lifespan.
 - **The SDK's DNS-rebinding check is off.** It would answer Cloud Run's `Host` with a 421. It protects servers that trust their network; this one's auth is the token.
 
 **Limits.**
-- **The URL is the credential.** Anyone who has it can read every candidate. ChatGPT's custom MCP servers take OAuth or nothing, and Claude's request headers are a beta for some organizations only, so the token goes in the path, which every client takes. It's one token for everyone; `MCP_TOKEN=$(openssl rand -hex 32) ./deploy.sh` rotates it and cuts off every connector at once.
+- **The URL is the credential.** Anyone who has it can read every candidate. ChatGPT's custom MCP servers take OAuth or nothing, and Claude's request headers are a beta for some organizations only, so the token goes in the path, which every client takes. It's one token for everyone. `MCP_TOKEN=$(openssl rand -hex 32) ./deploy.sh` rotates it: the old URL answers 404 and every connector has to be added again with the new one. Rotate when a review is over, not during it.
 - **Logs:** Logfire leaves `/mcp` requests out (`excluded_urls`) and records each call by the tool's name (the SDK's own span), without its arguments or results. Cloud Run's request log and uvicorn's access log still keep the URL with the token, as they do for chat links.
 - **Candidate data reaches a third-party assistant,** and through it that assistant's provider. Connecting one is the client's decision.
 - **Candidate text is untrusted input.** The candidate types their name. The summary, the open questions and the notes on unclear answers are written by a model from what the candidate typed. All of it reaches an assistant that may hold other tools (email, a calendar), so a candidate could try to steer it. That's why every tool is read-only, and the server's instructions tell the assistant to treat these fields as data.
