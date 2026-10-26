@@ -6,6 +6,7 @@ A transcript is the whole call: "user" lines as transcribed, "agent" lines cut t
 """
 
 import asyncio
+import json
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -15,7 +16,7 @@ from typing import cast
 
 import pytest
 from elevenlabs import AsyncElevenLabs
-from elevenlabs.speech_engine import ConversationMessage
+from elevenlabs.speech_engine import ConversationMessage, SpeechEngineSession
 from logfire.testing import CaptureLogfire
 from pydantic_ai import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -208,6 +209,68 @@ async def test_a_transcript_sent_again_runs_no_turn_and_gets_our_reply_again(
         ("candidate", NAME, False),
         ("assistant", ASK_LICENSE, False),
     ]
+
+
+async def test_an_older_transcript_with_other_words_runs_no_turn_by_its_event_id(
+    services: list[ScreeningService], database: str
+) -> None:
+    # Seen live: ElevenLabs read the candidate's words twice ("Diego Riconi", then "Diego Rigoni"), the second
+    # cutting our turn on the first, and once that was answered it sent the first reading again. Its words don't
+    # begin the newer one's, so only its event id tells it's older.
+    first_reading = "Sí, a sí es."
+    model = Model({START: ASK_NAME, first_reading: ASK_LICENSE, NAME: ASK_LICENSE}, hold={first_reading})
+    service, candidate, call = await call_on(services, database, model)
+    elevenlabs = ElevenLabs()
+    asked = (("user", START), ("agent", ASK_NAME))
+
+    await call.answer(transcript(("user", START)), elevenlabs.send_response, "conv_1", 1)
+    model.called.clear()
+    answering = asyncio.create_task(
+        call.answer(transcript(*asked, ("user", first_reading)), elevenlabs.send_response, "conv_1", 2)
+    )
+    await model.called.wait()
+    answering.cancel()
+    await asyncio.gather(answering, return_exceptions=True)
+    await call.answer(transcript(*asked, ("user", NAME)), elevenlabs.send_response, "conv_1", 3)
+    # A turn on it would read the first reading against our last question, and wait on the held reply.
+    await asyncio.wait_for(
+        call.answer(transcript(*asked, ("user", first_reading)), elevenlabs.send_response, "conv_1", 2), timeout=5
+    )
+
+    assert len(model.sent) == 3
+    # The transcript as sent shows none of our last reply played: it's said again.
+    assert elevenlabs.spoken == [ASK_NAME, ASK_LICENSE, ASK_LICENSE]
+    assert await chat(service, candidate) == [
+        ("candidate", START, False),
+        ("assistant", ASK_NAME, False),
+        ("candidate", NAME, False),
+        ("assistant", ASK_LICENSE, False),
+    ]
+
+
+async def test_a_transcript_handler_reads_its_own_event_id_from_the_sdk() -> None:
+    """voice.py reads the SDK's private `_current_event_id` in the handler, the one way to an event's id: this fails
+    if the SDK drops it, or if a handler no longer reads its own transcript's id there."""
+    received = [
+        json.dumps(
+            {"type": "user_transcript", "event_id": event_id, "user_transcript": [{"role": "user", "content": "Hola"}]}
+        )
+        for event_id in (7, 8)
+    ] + [json.dumps({"type": "close"})]
+
+    class Socket:
+        async def recv(self) -> str:
+            return received.pop(0)
+
+        async def send(self, data: str) -> None:
+            pass
+
+    session = SpeechEngineSession(Socket())
+    read: list[int | None] = []
+    session.on("user_transcript", lambda transcript: read.append(session._current_event_id))
+    await asyncio.wait_for(session.run(), timeout=5)
+
+    assert read == [7, 8]
 
 
 async def test_a_cut_reply_is_stored_as_heard_and_an_unplayed_one_is_removed(

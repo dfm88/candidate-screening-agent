@@ -223,7 +223,7 @@ An answer is only ever read against a question the candidate heard. ElevenLabs' 
 - **A turn cut off** (the candidate spoke again, or hung up) is discarded whole, like a failed text turn. The next turn reads the same words from the transcript, and the context block shows that nothing was saved. So nothing half-heard becomes a saved answer, and the next turn starts at once.
 - **A stored turn whose reply was cut while it played** is corrected to the part heard, in the chat and in the model's history. If none of it was played, it's removed.
 - **When the call ends,** whatever the candidate said that no turn answered gets a normal text turn, whose reply lands in the chat. Then the record is checked against ElevenLabs' history of the call, and the call is deleted there.
-- **ElevenLabs sends the same words again at times,** punctuated anew, or an older transcript after a newer one. These run no turn.
+- **ElevenLabs sends the same words again at times,** punctuated anew, or an older transcript after a newer one, even one with an earlier reading of the candidate's words ("Diego Riconi" after "Diego Rigoni"). These run no turn. An older transcript is told by its event id, which the SDK keeps in a private attribute (`_current_event_id`): a test fails if that changes.
 
 ### Latency
 

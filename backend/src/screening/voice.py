@@ -204,7 +204,13 @@ async def speech_engine(websocket: WebSocket) -> None:
     call = Call(service, candidate_id, call_id=uuid.uuid4().hex, history_until=await service.last_turn_id(candidate_id))
     session.on(
         "user_transcript",
-        lambda transcript: call.answer(transcript, session.send_response, session.conversation_id),
+        # The handler isn't given its transcript's event id, which tells an older transcript sent again from the
+        # newest. `_current_event_id` is private, but the SDK (2.74.1, `_handle_message`) cancels the running handler
+        # and waits for it before it sets the id and starts the next: a handler that runs reads its own transcript's
+        # id. test_voice.py fails if that stops holding.
+        lambda transcript: call.answer(
+            transcript, session.send_response, session.conversation_id, session._current_event_id
+        ),
     )
     session.on("error", lambda error: logfire.error("voice call error: {error!r}", error=error))
     with logfire.span("voice call {candidate_id}", candidate_id=candidate_id):
@@ -260,8 +266,9 @@ class Call:
     call_id: str
     # The last of our stored turns before the call: the model reads those, then the call from the transcript.
     history_until: int
-    # The newest transcript.
+    # The newest transcript, and its event id: ElevenLabs numbers them in order.
     latest: list[tuple[str, str]] = field(default_factory=list)
+    latest_event_id: int | None = None
     # What a turn cut off on the newest transcript had sent to be spoken, and its place in the transcript: no later
     # transcript will show what was heard of it, so the end of the call stores it, then corrects it from ElevenLabs'
     # history.
@@ -272,6 +279,7 @@ class Call:
         transcript: list[ConversationMessage],
         send_response: Callable[[AsyncIterator[str] | str], Awaitable[None]],
         conversation_id: str | None,
+        event_id: int | None = None,
     ) -> None:
         """A transcript from ElevenLabs, ending with what the candidate just said; `send_response` streams our reply
         back (the SDK session's). `conversation_id` is ElevenLabs' id for the call, logged with each turn: the SDK's
@@ -280,14 +288,21 @@ class Call:
         received = time.perf_counter()
         sent_lines = [(message.role, message.content) for message in transcript]
         lines = sent_lines
-        newest = said_words(self.latest)
-        if said_words(lines) != newest and starts(newest, said_words(lines)):
+        if event_id is not None and self.latest_event_id is not None:
+            older = event_id < self.latest_event_id
+        else:
+            # Without ids, an older transcript is known only when its words begin the newest one's.
+            newest = said_words(self.latest)
+            older = said_words(lines) != newest and starts(newest, said_words(lines))
+        if older:
             # An older transcript sent again after a newer one, which our turn on it may have been cancelled by: the
             # newer one is the call as it stands. Seen live: the older one comes back with what it got of the reply
-            # that was cut, as a line of ours at its end.
+            # that was cut, as a line of ours at its end; or with an earlier reading of the candidate's words
+            # ("Diego Riconi" after "Diego Rigoni"), which the newer one's don't begin with.
             lines = self.latest
         else:
             self.latest = lines
+            self.latest_event_id = event_id
             # The newest transcript: if a turn was cut off on the one before, this shows what was heard of it.
             self.cut = None
         record = await self.service.call_record(self.candidate_id, self.call_id)
