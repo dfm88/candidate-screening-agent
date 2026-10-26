@@ -118,6 +118,21 @@ class GroundedAnswers(Evaluator[Persona, ScreeningRun, Expected]):
         return {"grounded": EvaluationReason(value=not invented, reason="; ".join(invented) or None)}
 
 
+@dataclass
+class TopicsLoaded(Evaluator[Persona, ScreeningRun, Expected]):
+    """The FAQ topics a case's questions need were loaded: the agent has no other source for the job's facts. Whether
+    the answer stays within them is the judge's call (faq_answers)."""
+
+    def evaluate(self, ctx: Context) -> dict[str, EvaluationReason]:
+        wanted = expected_of(ctx).topics
+        if not wanted:
+            return {}
+        loaded = {topic for turn in ctx.output.turns for topic in turn.topics_loaded}
+        missing = sorted(set(wanted) - loaded)
+        reason = f"not loaded: {', '.join(missing)}" if missing else None
+        return {"faq_topics": EvaluationReason(value=not missing, reason=reason)}
+
+
 # --- How the agent asks ------------------------------------------------------------------------------------------
 
 KNOCKOUTS = (FieldName.LICENSE, FieldName.SERVICE_AREA)
@@ -210,7 +225,7 @@ class SavedLanguage(Evaluator[Persona, ScreeningRun, Expected]):
 
 GENDERED_WORDS = set(
     "bienvenido bienvenida interesado interesada seleccionado seleccionada contratado contratada preparado "  # noqa: SIM905
-    "preparada dispuesto dispuesta inscrito inscrita".split()
+    "preparada dispuesto dispuesta inscrito inscrita repartidor repartidora".split()
 )
 
 
@@ -278,6 +293,16 @@ SAVED_VALUES_RUBRIC = (
     "(how often, a preference) is no mismatch. Score 1.0 when every saved value holds, 0.0 when any was invented or "
     "doesn't match what the candidate said."
 )
+# Judged in conversations tagged faq and in any that loaded a topic, scripted ones too.
+FAQ_RUBRIC = (
+    "The input lists the FAQ topics the assistant loaded: the only facts about the job it may share. Every answer to "
+    "a candidate's question about the job must come from them, in the assistant's own words, for the country of work: "
+    "nothing added, nothing changed. What the assistant says about this chat itself (the first message, who sees the "
+    "answers, the next question) is no answer. A question the topics don't answer gets a reply that the team will "
+    "check, never a guess. Asked "
+    "whether a place is covered, the assistant says neither yes nor no and asks for the postal code. Score 1.0 when "
+    "every answer holds, 0.0 when any adds or changes a fact, guesses, or says whether a place is covered."
+)
 SUMMARY_RUBRIC = (
     "The output is the part of a recruiter's summary that adds to the key data in the input, which the recruiter "
     "already sees: caveats to check before deciding, and notes worth knowing. Empty lists are right when the "
@@ -323,6 +348,16 @@ class ConversationJudge(Evaluator[Persona, ScreeningRun, Expected]):
                 self.model,
                 self.model_settings,
             )
+        topics = {topic: text for turn in ctx.output.turns for topic, text in turn.topics_loaded.items()}
+        if topics or "faq" in expected_of(ctx).tags:
+            loaded = "\n\n".join(f"<topic id={topic!r}>\n{text}\n</topic>" for topic, text in topics.items())
+            gradings["faq_answers"] = judge_input_output(
+                f"{context}\nTopics the assistant loaded:\n{loaded or 'none'}",
+                transcript,
+                FAQ_RUBRIC,
+                self.model,
+                self.model_settings,
+            )
         if ctx.output.summary and not ctx.inputs.script:
             # The summary adds to the key data (what the recruiter sees first), so the judge reads both. Today's date
             # too, as the summary agent does: a start date of today next to "right away" is no discrepancy.
@@ -364,6 +399,9 @@ class ArenaNumbers(ReportEvaluator[Persona, ScreeningRun, Expected]):
         costs = [turn.cost_usd for turn in turns]
         input_tokens = sum(turn.input_tokens for turn in turns)
         models = Counter(model for turn in turns for model in turn.models)
+        topic_loads = Counter(topic for turn in turns for topic in turn.topics_loaded)
+        # A load of a topic already loaded is bounced with a retry, which costs a request.
+        bounced = sum(turn.tool_calls.count("load_capability") - len(turn.topics_loaded) for turn in turns)
         analyses: list[ReportAnalysis] = [
             ScalarResult(title="p50 per turn", value=round(statistics.median(seconds), 2), unit="s"),
             ScalarResult(title="p95 per turn", value=round(statistics.quantiles(seconds, n=20)[-1], 2), unit="s"),
@@ -375,6 +413,12 @@ class ArenaNumbers(ReportEvaluator[Persona, ScreeningRun, Expected]):
                 columns=["model", "responses"],
                 rows=[[model, count] for model, count in models.most_common()],
             ),
+            TableResult(
+                title="topic loads",
+                columns=["topic", "loads"],
+                rows=[[topic, count] for topic, count in topic_loads.most_common()],
+            ),
+            ScalarResult(title="bounced topic loads", value=bounced),
         ]
         if request_percentiles:
             analyses += [

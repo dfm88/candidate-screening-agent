@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelMessage, ModelRequest, ModelResponse, RunContext, TextPart, ToolCallPart
+from pydantic_ai.messages import LoadCapabilityReturnPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import increment_eval_metric
@@ -105,6 +106,8 @@ class Expected(BaseModel):
     answers: ExpectedAnswers = ExpectedAnswers()
     final_language: Language
     talent_pool_opt_in: bool | None = None
+    # The FAQ topics the case's questions need: each must be loaded.
+    topics: list[str] = []
 
 
 # --- The task output -----------------------------------------------------------------------------------------
@@ -125,6 +128,9 @@ class Turn(BaseModel):
     tool_calls: list[str]
     # The arguments of each save_answers call: tool_calls holds names only, and the judge reads what was passed.
     save_arguments: list[dict[str, Any]] = []
+    # The FAQ topics loaded in the turn and the text each gave the agent: what its answers may say. A load_capability
+    # call missing here was bounced (the topic was already loaded), at the cost of a request.
+    topics_loaded: dict[str, str] = {}
     # model_name of every response in the turn: with a fallback, this shows which model answered.
     models: list[str]
     seconds: float
@@ -215,10 +221,10 @@ Rules:
 - Never mention that this is a test or a role-play."""
 
 
-def candidate_prompt(first_message: list[str], turns: list[Turn]) -> str:
-    run = ScreeningRun(first_message=first_message, turns=turns, state=ScreeningState(language=Language.ES))
+def candidate_prompt(transcript: str) -> str:
+    """The conversation so far, with the candidate as "You"."""
     return (
-        f"<conversation>\n{run.transcript(candidate='You')}\n</conversation>\n"
+        f"<conversation>\n{transcript}\n</conversation>\n"
         "Label what the assistant's latest messages ask you, then write your next messages."
     )
 
@@ -262,8 +268,9 @@ def make_task(
             if persona.script:
                 messages, provided, done = persona.script[number].messages, persona.script[number].provides, False
             else:
+                so_far = ScreeningRun(first_message=first_message, turns=turns, state=state)
                 candidate = await simulator.run(
-                    candidate_prompt(first_message, turns),
+                    candidate_prompt(so_far.transcript(candidate="You")),
                     deps=persona,
                     model=simulator_model,
                     model_settings=SIMULATOR_SETTINGS,
@@ -306,12 +313,24 @@ def make_task(
                 if sent is not None
             ]
             calls = [part for response in responses for part in response.parts if isinstance(part, ToolCallPart)]
+            topic_of_call = {
+                call.tool_call_id: str(call.args_as_dict()["id"])
+                for call in calls
+                if call.tool_name == "load_capability"
+            }
             turn = Turn(
                 candidate=messages,
                 provided=provided,
                 reply=result.reply,
                 tool_calls=[call.tool_name for call in calls],
                 save_arguments=[call.args_as_dict() for call in calls if call.tool_name == save_answers.__name__],
+                topics_loaded={
+                    topic_of_call[part.tool_call_id]: part.instructions or ""
+                    for message in result.messages
+                    if isinstance(message, ModelRequest)
+                    for part in message.parts
+                    if isinstance(part, LoadCapabilityReturnPart)
+                },
                 models=[response.model_name or "unknown" for response in responses],
                 seconds=seconds,
                 request_seconds=request_seconds,

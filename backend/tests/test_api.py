@@ -423,7 +423,8 @@ async def test_a_voice_note_is_answered_like_a_typed_message_with_the_spoken_rul
     assert note.turn_id == turns[-1].id
     # The turn knows it's a voice note: the spoken rules, without a live call's, and one bubble, played as one audio.
     [(instructions, prompt)] = read
-    assert instructions is not None and instructions.endswith(SPOKEN.strip()) and LIVE_CALL.strip() not in instructions
+    # The spoken rules, then the list of FAQ topics.
+    assert instructions is not None and SPOKEN.strip() in instructions and LIVE_CALL.strip() not in instructions
     assert "channel: voice_note" in prompt
     assert [message.text for message in messages[2:]] == ["Entendido, Lucía.\n\n¿Tienes carnet de conducir en vigor?"]
 

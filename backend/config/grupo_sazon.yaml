@@ -135,39 +135,57 @@ platforms:
   Stuart: [stuart]
   Amazon Flex: [amazon flex, amazon]
 
-# Job facts the agent may share. SYNTHETIC, like the locations: placeholders for the client's real FAQ.
-# Written in English; the agent answers in the candidate's language and must not go beyond these answers.
+# Job facts the agent may share, in topics it loads when a question needs one: it sees each topic's description
+# until then. SYNTHETIC, like the locations: placeholders for the client's real FAQ. Written in English; the agent
+# answers in the candidate's language and must not go beyond these answers. Where we hire is a topic too, rendered from
+# the locations above.
 faq:
-  - question: How much does it pay?
-    answer: >-
-      Spain: from 9.80 EUR gross per hour, plus 0.50 EUR per delivery; full-time is around 1,450 EUR gross per
-      month. Mexico: from 320 MXN per day plus 12 MXN per delivery. Tips are 100% for the driver in both countries.
-  - question: Do I need my own vehicle?
-    answer: >-
-      No. Grupo Sazón provides an electric scooter, a helmet and a thermal bag. Drivers who prefer their own
-      motorbike get a fuel allowance.
-  - question: What kind of contract is it?
-    answer: >-
-      An employment contract with Grupo Sazón (not freelance), with social security from day one. A 2-month
-      trial period applies.
-  - question: What are the shifts?
-    answer: >-
-      Shifts cover the restaurant's opening hours, Monday to Sunday, and are busiest at lunch and dinner.
-      Part-time and weekend-only contracts exist. The schedule is agreed with the restaurant manager, with the
-      candidate's preference in mind.
-  - question: Which licenses are accepted?
-    answer: >-
-      A car or motorbike license (in Spain B, AM, A1, A2 or A), valid today for driving in the country where you
-      work. The hiring team checks a license from another country.
-  - question: Is there training?
-    answer: >-
-      Yes: a paid half-day induction on safety, the scooter and the delivery app before the first shift.
-  - question: What happens after this chat?
-    answer: >-
-      Recruiters review the answers. Qualified candidates are contacted for a short call with the team, usually
-      within 2 working days.
-  - question: Is there a uniform?
-    answer: Yes, Grupo Sazón provides the uniform and rain gear.
+  - id: pay
+    description: Pay per hour or per day, the bonus per delivery, tips.
+    entries:
+      - question: How much does it pay?
+        answer: >-
+          Spain: from 9.80 EUR gross per hour, plus 0.50 EUR per delivery; full-time is around 1,450 EUR gross per
+          month. Mexico: from 320 MXN per day plus 12 MXN per delivery. Tips are 100% for the driver in both countries.
+  - id: shifts
+    description: Shifts, opening hours and days, part-time and weekend-only contracts, who sets the schedule.
+    entries:
+      - question: What are the shifts?
+        answer: >-
+          Shifts cover the restaurant's opening hours, Monday to Sunday, and are busiest at lunch and dinner.
+          Part-time and weekend-only contracts exist. The schedule is agreed with the restaurant manager, with the
+          candidate's preference in mind.
+  - id: vehicle_and_equipment
+    description: Whether they need their own vehicle, what the company provides (scooter, helmet, bag, uniform, rain
+      gear), the fuel allowance.
+    entries:
+      - question: Do I need my own vehicle?
+        answer: >-
+          No. Grupo Sazón provides an electric scooter, a helmet and a thermal bag. Drivers who prefer their own
+          motorbike get a fuel allowance.
+      - question: Is there a uniform?
+        answer: Yes, Grupo Sazón provides the uniform and rain gear.
+  - id: documents_and_contract
+    description: The driving licenses accepted, the type of contract, social security, the trial period.
+    entries:
+      - question: Which licenses are accepted?
+        answer: >-
+          A car or motorbike license (in Spain B, AM, A1, A2 or A), valid today for driving in the country where you
+          work. The hiring team checks a license from another country.
+      - question: What kind of contract is it?
+        answer: >-
+          An employment contract with Grupo Sazón (not freelance), with social security from day one. A 2-month
+          trial period applies.
+  - id: how_hiring_works
+    description: What happens after this chat, when the team gets in touch, the training before the first shift.
+    entries:
+      - question: What happens after this chat?
+        answer: >-
+          Recruiters review the answers. Qualified candidates are contacted for a short call with the team, usually
+          within 2 working days.
+      - question: Is there training?
+        answer: >-
+          Yes: a paid half-day induction on safety, the scooter and the delivery app before the first shift.
 
 # The word each country uses for the same thing. The agent writes Spanish with the country of work's terms only;
 # the evals flag the other country's terms. One row per concept, every country filled in.
@@ -179,6 +197,7 @@ regional_terms:
   - {ES: jornada completa, MX: tiempo completo}
   - {ES: media jornada, MX: medio tiempo}
   - {ES: equipo de selección, MX: equipo de reclutamiento}
+  - {ES: autónomo, MX: por honorarios}
 
 # Quick-reply labels, and the stages a reminder names: the next field to ask, or the recap.
 labels:

@@ -251,6 +251,7 @@ Where the time goes, at the median: ElevenLabs' speech recognition and turn dete
 - **A voice turn that fails** (every model down, or out of time) says the chat's "Dame un momento, por favor." ("Give me a moment, please."). The candidate's next words get a turn that answers both.
 - **Typing in the chat during a call** works, but the turns take turns.
 - **Tickets and locks live in memory,** which fits the deployment's single instance.
+- **An FAQ topic is loaded again for each question about it in a call.** The agent loads the job's facts by topic (`load_capability`) when a question needs one. A call's history is rebuilt from ElevenLabs' transcript on every turn, and the transcript holds what was said, not tool calls. So a second question on a topic the call already loaded loads it again: one more request (terra's median is 1.3 s). Checked with terra, 3 of 3. A topic loaded in the text chat before the call stays loaded.
 
 ## Evals
 
@@ -301,8 +302,14 @@ The round on 2026-10-25 (prompt `da96a191`; full tables in [`arena.md`](backend/
 \* judged by a model of the same family.
 
 - **Models that save answers the candidate never gave are out.** gpt-6-luna and Haiku 5.5 at low effort did: a license "yes" saved during the name question, before the license was asked. In an earlier run, luna invented a whole profile from "Sure, go ahead" and closed it as qualified. The checks only catch this when the field comes up again, so luna's 0.99 understates it. That's why it's out despite costing 18× less than terra.
-- **terra and 3.8 Flash tie on the checks and the judge.** terra is faster and 2.6× cheaper, mostly because OpenAI's prompt cache holds the append-only history (97% of input), while 3.8 Flash's best-effort implicit cache read 7%. 3.8 Flash's misses are style only: two questions in a turn, a "Gracias, Luis." ("Thanks, Luis.") sent on its own.
+- **terra and 3.8 Flash tie on the checks and the judge.** terra is faster and 2.6× cheaper, mostly because OpenAI's prompt cache holds the append-only history (97% of input), while 3.8 Flash's best-effort implicit cache read 7%. In that round 3.8 Flash's misses were style only: two questions in a turn, a "Gracias, Luis." ("Thanks, Luis.") sent on its own.
 - **3.8 Flash is the fallback:** another provider, so one outage can't take out both. Its request p99 (7.0 s) fits the 10 s request deadline.
+- **The final run** (prompt `012123f5`; 32 cases × 2, 20 of them scripted replays of observed failures; judged by Claude Opus 5.5 at low effort, a family neither config belongs to). The demo config scored 1.00 on every check, and the fallback answered none of its 657 turns. 3.8 Flash alone missed where the scripted cases press:
+  - it saved a misspelt place ("vivo en Malasañna") as Malasaña without asking, 2 of 2, where the tool asks the agent to check first;
+  - after the recruiter's final "qualified", it said the team would take a new answer into account "cuando revise tu caso" ("when it reviews your case"), 2 of 2;
+  - it called candidates "repartidora" or "repartidor" (a delivery driver, feminine or masculine) 10 times, guessing their gender from the name; terra never did.
+
+  These matter because 3.8 Flash answers the turns terra fails. The evals now catch all three (the gendered words since `gender_neutral` lists them), so a next round of fallback candidates is measured on them.
 - **Not Vertex `eu` for the demo.** The same day, 3.8 Flash on Vertex `eu` (dynamic shared quota) took up to 85 s per turn, then requests hung for 40 minutes; the Gemini API answered in about 2 s. The EU path needs reserved capacity first.
 - **The round before** (2026-10-24, EU models only) ruled out Gemini 3.5 Flash (it saved the name from the application before the candidate confirmed it) and 3.5 Flash-Lite (a wrongful license knockout, and an area asked three times).
 - **Cost:** about $22 per 1,000 completed screenings on terra, against about $57 on 3.8 Flash at its launch price. The summary agent adds one call per screening.

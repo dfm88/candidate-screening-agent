@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from datetime import UTC, datetime
 
@@ -15,7 +16,15 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
 
-from screening.agent import LIVE_CALL, SPOKEN, Medium, history_from_turns, render_instructions, run_turn
+from screening.agent import (
+    LIVE_CALL,
+    SPOKEN,
+    Medium,
+    faq_topics,
+    history_from_turns,
+    render_instructions,
+    run_turn,
+)
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, load_client_config
 from screening.domain import Application, FieldName, LicenseAnswer, ScreeningState, Status
 
@@ -49,6 +58,15 @@ async def turn(candidate_messages: list[str], sent: list[list[ModelMessage]]):
         now=NOW,
         conversation_id="test",
     )
+
+
+def test_where_we_hire_names_the_places_of_the_country_of_work_never_a_postal_code() -> None:
+    # A postal code in sight could be saved as the candidate's without them giving it.
+    topic = next(topic for topic in faq_topics(CONFIG, APPLICATION) if topic.id == "where_we_hire")
+    text = str(topic.get_instructions())
+    assert "Madrid Chamberí (Chamberí, Malasaña, Argüelles, Ríos Rosas)" in text
+    assert "Roma Norte" not in text
+    assert not re.search(r"\d{3}", text)
 
 
 async def test_tool_calls_update_the_state_and_paragraphs_become_messages() -> None:
@@ -108,12 +126,13 @@ async def test_the_voice_rules_are_read_on_spoken_turns_only() -> None:
         )
         replies.append(result.reply)
     # Text reads exactly what the evals validated; a spoken turn reads the same first, so the prompt cache serves all.
-    # A voice note isn't a call: no acknowledgement before a tool call, and no lines cut off.
-    assert read == [
-        render_instructions(CONFIG).strip(),
-        f"{render_instructions(CONFIG)}\n{SPOKEN}\n{LIVE_CALL}".strip(),
-        f"{render_instructions(CONFIG)}\n{SPOKEN}".strip(),
-    ]
+    # A voice note isn't a call: no acknowledgement before a tool call, and no lines cut off. The list of FAQ topics
+    # follows each.
+    text, call, voice_note = read
+    rendered = render_instructions(CONFIG)
+    assert text and text.startswith(rendered.strip()) and SPOKEN.strip() not in text
+    assert call and call.startswith(f"{rendered}\n{SPOKEN}\n{LIVE_CALL}".strip())
+    assert voice_note and voice_note.startswith(f"{rendered}\n{SPOKEN}".strip()) and LIVE_CALL.strip() not in voice_note
     # Spoken, a reply is one bubble: a voice note's plays as one audio.
     assert replies == [["Vale.", "¿Seguimos?"], ["Vale.\n\n¿Seguimos?"], ["Vale.\n\n¿Seguimos?"]]
 

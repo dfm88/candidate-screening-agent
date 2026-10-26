@@ -40,6 +40,7 @@ from evals.evaluators import (
     SavedAnswers,
     SavedLanguage,
     SpanishWording,
+    TopicsLoaded,
 )
 from evals.task import CONFIG, Expected, Persona, ScreeningRun, make_task
 from screening.agent import MODEL_SETTINGS, build_model, model_from_string, prompt_version, screening_agent
@@ -48,7 +49,7 @@ from screening.config import SERVICE_NAME, Settings
 CASES = Path(__file__).parent / "cases.yaml"
 RESULTS = Path(__file__).parent / "results"
 SIMULATOR = "openai:gpt-6-sol"
-# The judge is an OpenAI model, so its scores on OpenAI rows may favour their style (marked in the table).
+# A judge from a row's own family may favour its style: its scores on that row are marked in the table.
 JUDGE = "openai:gpt-6-luna"
 JUDGE_SETTINGS = ModelSettings(thinking="low")
 ASSERTIONS = [
@@ -58,12 +59,13 @@ ASSERTIONS = [
     "no_reask",
     "two_tries_max",
     "no_standalone_ack",
+    "faq_topics",
     "saved_language",
     "regional_terms",
     "gender_neutral",
 ]
 SCORES = ["saved_answers", "message_shape"]
-JUDGE_SCORES = [*RUBRICS, "saved_values", "summary", "decision"]
+JUDGE_SCORES = [*RUBRICS, "saved_values", "faq_answers", "summary", "decision"]
 
 
 def is_transient(error: BaseException) -> bool:
@@ -82,7 +84,7 @@ RETRY = RetryConfig(
 )
 
 
-def load_dataset(case_names: list[str]) -> Dataset[Persona, ScreeningRun, Expected]:
+def load_dataset(case_names: list[str], judge: str) -> Dataset[Persona, ScreeningRun, Expected]:
     dataset = Dataset[Persona, ScreeningRun, Expected].from_file(CASES)
     if case_names:
         dataset.cases = [case for case in dataset.cases if case.name in case_names]
@@ -90,13 +92,14 @@ def load_dataset(case_names: list[str]) -> Dataset[Persona, ScreeningRun, Expect
         OutcomeMatches(),
         SavedAnswers(),
         GroundedAnswers(),
+        TopicsLoaded(),
         Asking(),
         MessageShape(),
         NoStandaloneAcknowledgement(),
         SavedLanguage(),
         SpanishWording(),
         CacheHealth(),
-        ConversationJudge(model=JUDGE, model_settings=JUDGE_SETTINGS),
+        ConversationJudge(model=judge, model_settings=JUDGE_SETTINGS),
     ):
         dataset.add_evaluator(evaluator)
     dataset.report_evaluators.append(ArenaNumbers())
@@ -118,8 +121,11 @@ def arena_row(report: EvaluationReport, thinking: str, judged_by_own_family: boo
     scores = averages.scores if averages else {}
     analyses = {analysis.title: analysis for analysis in report.analyses}
     numbers = {title: a.value for title, a in analyses.items() if isinstance(a, ScalarResult)}
-    by_model = analyses.get("responses by model")
-    models = ", ".join(f"{row[0]} {row[1]}" for row in by_model.rows) if isinstance(by_model, TableResult) else ""
+
+    def table(title: str) -> str:
+        result = analyses.get(title)
+        return ", ".join(f"{row[0]} {row[1]}" for row in result.rows) if isinstance(result, TableResult) else ""
+
     mark = " *" if judged_by_own_family else ""
 
     def show(value: float | None, digits: int = 2) -> str:
@@ -153,7 +159,8 @@ def arena_row(report: EvaluationReport, thinking: str, judged_by_own_family: boo
         "spend: agent / simulator USD": f"{show(numbers.get('agent spend'), 3)} / "
         f"{show(numbers.get('simulator spend'), 3)}",
         "cache collapses": show(scores.get("cache_collapses")),
-        "responses by model": models,
+        "responses by model": table("responses by model"),
+        "topic loads (bounced)": f"{table('topic loads') or '–'} ({show(numbers.get('bounced topic loads'), 0)})",
     }
     return row
 
@@ -182,7 +189,8 @@ def write_transcripts(report: EvaluationReport, path: Path) -> None:
             parts += [quote("candidate", message) for message in turn.candidate]
             parts.append(
                 f"`provided: {', '.join(turn.provided) or '-'} · saved: "
-                f"{'; '.join(f'{field}={value}' for field, value in saved.items()) or '-'}`\n\n"
+                f"{'; '.join(f'{field}={value}' for field, value in saved.items()) or '-'} · topics loaded: "
+                f"{', '.join(turn.topics_loaded) or '-'}`\n\n"
                 f"`{', '.join(turn.tool_calls) or 'no tools'} · {', '.join(turn.models)} · {turn.seconds:.1f}s`"
             )
             parts += [quote("assistant", message) for message in turn.reply]
@@ -205,13 +213,13 @@ async def main(args: argparse.Namespace) -> None:
 
     model_settings = ModelSettings(**(MODEL_SETTINGS | json.loads(args.settings)))
     version = prompt_version(CONFIG, model_settings)
-    dataset = load_dataset(args.case)
+    dataset = load_dataset(args.case, args.judge)
     simulator_model = model_from_string(args.simulator, settings)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
     (RESULTS / "transcripts").mkdir(parents=True, exist_ok=True)
     header = (
         f"## {stamp} · prompt {version} · {len(dataset.cases)} cases × {args.repeat}\n\n"
-        f"Simulator {args.simulator}, judge {JUDGE}. Checks and scores are means over runs (1.00 = always). "
+        f"Simulator {args.simulator}, judge {args.judge}. Checks and scores are means over runs (1.00 = always). "
         "* = judged by a model of the same family, which may favour its style.\n\n"
     )
 
@@ -230,12 +238,12 @@ async def main(args: argparse.Namespace) -> None:
                 progress=len(args.model) == 1,
                 repeat=args.repeat,
                 retry_task=RETRY,
-                metadata={"prompt_version": version, "simulator": args.simulator, "judge": JUDGE},
+                metadata={"prompt_version": version, "simulator": args.simulator, "judge": args.judge},
             )
         report.print(include_reasons=True, include_durations=False)
         # The settings are in the name, so two configs of one model started in the same minute get separate files.
         write_transcripts(report, RESULTS / "transcripts" / f"{stamp}-{re.sub(r'[^\w.-]+', '_', name)}.md")
-        judge_family = JUDGE.partition(":")[0]
+        judge_family = args.judge.partition(":")[0]
         row = arena_row(
             report,
             thinking_sent(model_from_string(model_string, settings), model_settings),
@@ -259,4 +267,5 @@ if __name__ == "__main__":
     parser.add_argument("--concurrency", type=int, default=3, help="Conversations at a time (keep 2-4).")
     parser.add_argument("--case", action="append", default=[], help="Run only this case; repeatable.")
     parser.add_argument("--simulator", default=SIMULATOR, help="Model string for the simulated candidate.")
+    parser.add_argument("--judge", default=JUDGE, help="Model string for the LLM judge.")
     asyncio.run(main(parser.parse_args()))

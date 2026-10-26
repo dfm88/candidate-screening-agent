@@ -365,6 +365,177 @@ cases:
         full_name: Ana Torres Lozano
         license: null
 
+  # Seen Sun 25 when the FAQ moved from the prompt into topics: terra answered this name confirmation with the license
+  # question and saved nothing, 7 times in 30 (0 in 30 with the FAQ in the prompt, and 0 in 20 with it inline next to the
+  # topics). The exact exchange: a varied one (another city, name and wording) didn't reproduce it.
+  - name: scripted_es_yes_to_name_saves_it
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Irene Navarro Gil
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Irene confirms the name on her application with a short yes.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+    metadata:
+      tags: [es, scripted, grounded]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Irene Navarro Gil
+
+  # FAQ topics (Sun 25): a question on each topic loads that topic and is answered within it (faq_answers, judged on
+  # the loaded topics' text). Worded apart from the topics' descriptions and the instructions.
+  - name: scripted_es_faq_pay_per_month
+    inputs:
+      vacancy: es-vlc-ruzafa
+      name_on_application: Pablo Soler Martí
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Pablo confirms his name and asks what the job pays in a month.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo. oye, y cuánto se saca al mes más o menos?"]
+          provides: [full_name]
+    metadata:
+      tags: [es, scripted, faq]
+      status: in_progress
+      final_language: es
+      topics: [pay]
+      answers:
+        full_name: Pablo Soler Martí
+
+  - name: scripted_mx_faq_sunday_shifts
+    inputs:
+      vacancy: mx-gdl-americana
+      name_on_application: Daniela Ríos Lozano
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Daniela gives her license and asks, in the same message, whether the job includes Sundays.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["Sí, soy yo"]
+          provides: [full_name]
+        - messages: ["Sí, tengo licencia vigente. Oye, ¿también se trabaja en domingo?"]
+          provides: [license]
+    metadata:
+      tags: [mx, scripted, faq]
+      status: in_progress
+      final_language: es
+      topics: [shifts]
+      answers:
+        full_name: Daniela Ríos Lozano
+        license: "yes"
+
+  - name: scripted_es_faq_own_motorbike
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: Jordi Puig Serra
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Jordi gives his postal code and asks whether he has to bring his own motorbike.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí"]
+          provides: [full_name]
+        - messages: ["sí, tengo el A2 en vigor"]
+          provides: [license]
+        - messages: ["08012", "la moto la tengo que poner yo?"]
+          provides: [service_area]
+    metadata:
+      tags: [es, scripted, faq]
+      status: in_progress
+      final_language: es
+      topics: [vehicle_and_equipment]
+      answers:
+        full_name: Jordi Puig Serra
+        license: "yes"
+        location_id: es-bcn-gracia
+
+  - name: scripted_mx_faq_contract_or_fees
+    inputs:
+      vacancy: mx-mty-centro
+      name_on_application: Ricardo Garza Treviño
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Ricardo confirms his name and asks whether it's a contract or freelance work paid by fees.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["Sí, soy yo. Antes de seguir, ¿es con contrato o por honorarios?"]
+          provides: [full_name]
+    metadata:
+      tags: [mx, scripted, faq]
+      status: in_progress
+      final_language: es
+      topics: [documents_and_contract]
+      answers:
+        full_name: Ricardo Garza Treviño
+
+  - name: scripted_en_faq_hear_back
+    inputs:
+      vacancy: es-mad-getafe
+      name_on_application: Tom Walsh
+      application_language: en
+      now: 2026-10-21T16:00:00Z
+      profile: Tom confirms his name and asks how soon he'd hear back after the chat.
+      script:
+        - messages: ["Start"]
+        - messages: ["Yes, that's me. Quick question: how soon would I hear back after this?"]
+          provides: [full_name]
+    metadata:
+      tags: [en, scripted, faq]
+      status: in_progress
+      final_language: en
+      topics: [how_hiring_works]
+      answers:
+        full_name: Tom Walsh
+
+  - name: scripted_es_faq_where_restaurants
+    inputs:
+      vacancy: es-mad-chamberi
+      name_on_application: Irene Navarro Gil
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Irene confirms her name, then asks where the restaurants are before going on.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["sí, soy yo"]
+          provides: [full_name]
+        - messages: ["antes de nada, dónde tenéis restaurantes?"]
+    metadata:
+      tags: [es, scripted, faq]
+      status: in_progress
+      final_language: es
+      topics: [where_we_hire]
+      answers:
+        full_name: Irene Navarro Gil
+
+  # A place that isn't listed may still be in an area: only the postal code tells. No area saved, no knockout.
+  - name: scripted_mx_faq_unlisted_colonia_covered
+    inputs:
+      vacancy: mx-cdmx-roma
+      name_on_application: Alejandro Cruz Vega
+      application_language: es
+      now: 2026-10-21T16:00:00Z
+      profile: Alejandro answers the area question by asking whether a colonia that isn't listed (Narvarte) is covered.
+      script:
+        - messages: ["Empezar"]
+        - messages: ["Sí, soy yo"]
+          provides: [full_name]
+        - messages: ["Sí, tengo licencia vigente"]
+          provides: [license]
+        - messages: ["¿Cubren la Narvarte?"]
+    metadata:
+      tags: [mx, scripted, faq, place]
+      status: in_progress
+      final_language: es
+      answers:
+        full_name: Alejandro Cruz Vega
+        license: "yes"
+        location_id: not saved
+
   - name: es_madrid_burst_qualified
     inputs:
       vacancy: es-mad-chamberi
@@ -386,6 +557,7 @@ cases:
       status: completed
       outcome: qualified
       final_language: es
+      topics: [vehicle_and_equipment]
       answers:
         full_name: Marta Ruiz Ortega
         license: "yes"

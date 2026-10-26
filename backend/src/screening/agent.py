@@ -35,6 +35,7 @@ from pydantic_ai import (
     TextPartDelta,
     UserPromptPart,
 )
+from pydantic_ai.capabilities import Capability
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.google import GoogleModel
@@ -71,6 +72,7 @@ SUMMARY_SETTINGS = ModelSettings(temperature=0.2, thinking=False)
 # but no change to what the models read can slip past it.
 CODE = Path(__file__).read_text(encoding="utf-8") + Path(domain.__file__).read_text(encoding="utf-8")
 LANGUAGE_NAMES = {Language.ES: "Spanish", Language.EN: "English"}
+COUNTRY_NAMES = {Country.ES: "Spain", Country.MX: "Mexico"}
 
 
 class Medium(StrEnum):
@@ -98,12 +100,51 @@ screening_agent = Agent(deps_type=Deps, output_type=str, model_settings=MODEL_SE
 
 
 def render_instructions(config: ClientConfig) -> str:
-    """The prompt with the client's data: persona, FAQ and regional glossary."""
-    faq = "\n".join(f"- {entry.question} {entry.answer}" for entry in config.faq)
+    """The prompt with the client's data: persona and regional glossary. The FAQ comes in topics (faq_topics)."""
     regional_terms = "\n".join(
         f"- {country}: " + ", ".join(row[country] for row in config.regional_terms) for country in Country
     )
-    return PROMPT.format(persona=config.persona_name, client=config.client_name, faq=faq, regional_terms=regional_terms)
+    return PROMPT.format(persona=config.persona_name, client=config.client_name, regional_terms=regional_terms)
+
+
+def faq_topics(config: ClientConfig, application: Application) -> list[Capability[Deps]]:
+    """The job's facts, one topic each, loaded by the model when a question needs one (load_capability). Until then
+    it reads only their descriptions, so the instructions don't grow with every answer. Where we hire is a topic too,
+    rendered from the locations in the vacancy's country: names only, never postal codes, since a code in sight could
+    be saved without the candidate giving it."""
+    topics = [
+        Capability[Deps](
+            id=topic.id,
+            description=topic.description,
+            instructions="\n".join(f"- {entry.question} {entry.answer}" for entry in topic.entries),
+            defer_loading=True,
+        )
+        for topic in config.faq
+    ]
+    country = config.locations_by_id[application.vacancy_location_id].country
+    cities: dict[str, list[str]] = {}
+    for location in config.locations:
+        if location.country is country:
+            cities.setdefault(location.city, []).append(f"{location.name} ({', '.join(location.places)})")
+    where_we_hire = "\n".join(
+        [
+            f"Where we hire in {COUNTRY_NAMES[country]}: each city, its restaurants, and places their areas cover.",
+            *(f"- {city}: {'; '.join(restaurants)}" for city, restaurants in cities.items()),
+            "This list says where we hire. Whether the candidate's own area is covered is decided only by "
+            "save_answers, from the postal code or place where they live: never say or suggest it, nor that an area "
+            "reaches beyond the places listed. Asked whether we cover a place, say neither yes nor no: ask for their "
+            "postal code.",
+        ]
+    )
+    topics.append(
+        Capability[Deps](
+            id="where_we_hire",
+            description="The cities and restaurants we hire for, and places their areas cover.",
+            instructions=where_we_hire,
+            defer_loading=True,
+        )
+    )
+    return topics
 
 
 def render_summary_instructions(config: ClientConfig) -> str:
@@ -405,6 +446,7 @@ async def run_turn(
             prompt,
             message_history=history,
             deps=deps,
+            capabilities=faq_topics(config, application),
             model=model,
             conversation_id=conversation_id,
             model_settings=model_settings,
@@ -447,6 +489,7 @@ async def stream_turn(
             prompt,
             message_history=history,
             deps=deps,
+            capabilities=faq_topics(config, application),
             model=model,
             conversation_id=conversation_id,
             model_settings=model_settings,

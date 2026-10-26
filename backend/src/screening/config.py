@@ -142,6 +142,14 @@ class FaqEntry(BaseModel):
     answer: str
 
 
+class FaqTopic(BaseModel):
+    """Job facts the agent loads when a question needs them; the description tells it what the topic covers."""
+
+    id: str
+    description: str
+    entries: list[FaqEntry]
+
+
 class ClientConfig(BaseModel):
     client_name: str
     persona_name: str
@@ -151,7 +159,7 @@ class ClientConfig(BaseModel):
     timings: Timings
     locations: list[Location]
     platforms: dict[str, list[str]]
-    faq: list[FaqEntry]
+    faq: list[FaqTopic]
     regional_terms: list[dict[Country, str]]
     labels: dict[Locale, dict[str, str]]
     templates: dict[str, dict[Locale, list[str]]]
