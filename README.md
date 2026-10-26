@@ -23,12 +23,12 @@ To ask your own assistant instead, add the MCP URL as a connector ([MCP server f
 ```mermaid
 flowchart LR
     cand["Candidate<br/>/apply · /chat"]
-    el["ElevenLabs<br/>Speech Engine"]
+    el["ElevenLabs<br/>Speech Engine · STT · TTS"]
 
     subgraph app["Cloud Run: one instance, one FastAPI app"]
         api["Chat API<br/>stores the message, pending"]
         worker["Worker per conversation<br/>waits 1.5 s, takes all pending<br/>a message mid-turn runs it again"]
-        agent["One agent turn with tools<br/>code decides the outcome"]
+        agent["One agent turn, code decides the outcome<br/>•&nbsp;save_answers<br/>•&nbsp;mark_unclear<br/>•&nbsp;request_human<br/>•&nbsp;forward_question<br/>•&nbsp;end_conversation<br/>•&nbsp;finish_screening<br/>+ FAQ topics, loaded on demand"]
         store["Turn stored<br/>in one transaction"]
         sse["SSE hub"]
         voice["Voice WebSocket"]
@@ -42,12 +42,14 @@ flowchart LR
     rec["Recruiter<br/>/recruiter"]
     asst["Recruiter's own<br/>assistant"]
 
-    cand --> api --> worker --> agent --> store --> sse --> cand
+    cand -->|text or voice note| api
+    api --> worker --> agent --> store --> sse --> cand
     agent <--> llm
-    cand <-->|WebRTC| el <--> voice --> agent
+    el <-->|"voice notes: STT<br/>playback: TTS"| api
+    cand <-->|"live call: WebRTC"| el <--> voice --> agent
     rapi --- rec
     mcp --- asst
-    app --> db
+    store --> db
 ```
 
 **One message, end to end** ([`service.py`](backend/src/screening/service.py)):
@@ -73,7 +75,14 @@ flowchart LR
 
 **1. One agent with tools, not a scripted state machine.**
 - *Problem:* candidates answer out of order, give three answers in one message, ask about pay halfway through and switch language. A state machine needs a branch for each, and the first build (extractor → code → responder) sounded robotic.
-- *Choice:* one PydanticAI agent follows the process from its prompt, and calls six tools of ours, plus the one that loads a topic. The evals enforce the process rules: knockouts first, at most two tries, nothing asked twice, short messages with the question last.
+- *Choice:* one PydanticAI agent follows the process from its prompt, and calls six tools of ours, plus the one that loads a topic. The evals enforce the process rules: knockouts first, at most two tries, nothing asked twice, short messages with the question last. The tools, all on the turn's copy of the state (decision 4):
+  - `save_answers(answers)`: saves what the candidate said, several answers at once, corrections included. Code checks places and postal codes against the service areas and resolves dates; what it can't save comes back with the reason and the valid options.
+  - `mark_unclear(field, note)`: gives up on a field after two tries. The recruiter sees it as unclear, with the note.
+  - `request_human(reason)`: the candidate asks for a person. A recruiter reviews the screening and contacts them.
+  - `forward_question(question)`: a question the job's facts don't answer, passed to the recruiter as an open question.
+  - `end_conversation(reason)`: not interested (or STOP), not the person who applied, or abuse after one warning. Abuse goes to a person for review; the other two withdraw the application.
+  - `finish_screening()`: the outcome, computed by code from the saved state (decision 2). It refuses while answers are missing.
+  - `load_capability(id)`: PydanticAI's own; loads one topic of the job's facts (below).
 - *Rejected:* a form engine, or a state machine with a model call per step.
 - *Limit:* the behaviour is measured, not guaranteed. Every prompt change runs the simulated set (about $1 a run on terra), and each new failure becomes an eval case before the fix.
 - **The job's facts work the same way.**
