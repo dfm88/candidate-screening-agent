@@ -40,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         channel=web_chat,
     )
     recruiter_mcp = mcp_server.build(service) if settings.mcp_token else None
+    elevenlabs = AsyncElevenLabs(api_key=settings.elevenlabs_api_key) if settings.elevenlabs_api_key else None
 
     async def tick_forever() -> None:
         while True:
@@ -54,11 +55,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await service.resume()
         ticking = asyncio.create_task(tick_forever(), name="tick")
+        # In the background: ElevenLabs being slow or down never holds up startup.
+        background = [ticking]
+        if elevenlabs is not None:
+            background.append(asyncio.create_task(voice.apply_recording(elevenlabs, settings), name="voice-recording"))
         # Starlette never runs a mounted app's lifespan, and the MCP app's requests need its session manager running.
         async with recruiter_mcp.session_manager.run() if recruiter_mcp else nullcontext():
             yield
-        ticking.cancel()
-        await asyncio.gather(ticking, return_exceptions=True)
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         await service.stop()
         await engine.dispose()
 
@@ -67,7 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.service = service
     app.state.web_chat = web_chat
-    app.state.elevenlabs = AsyncElevenLabs(api_key=settings.elevenlabs_api_key) if settings.elevenlabs_api_key else None
+    app.state.elevenlabs = elevenlabs
     # Checked here, not in Settings: the evals and the CLI never use the recruiter tool, and a Settings validation
     # error would print the input values, secrets included.
     if settings.recruiter_password and not settings.session_secret:

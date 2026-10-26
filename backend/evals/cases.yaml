@@ -707,6 +707,52 @@ cases:
       <<: *bare_next_monday_on_sunday_expected
       tags: [es, scripted, dates, voice]
 
+  # Federico, Mon 26 am (prod): the chat by voice notes up to availability, then a call. The call's first turn read
+  # the chat's turns, saves included, and answered "In the afternoon." with "Got it, afternoons." and nothing more: one
+  # request, no save, no question, the candidate left waiting. That's the spoken line before a tool call
+  # (live_call.md), said without the call. Expected: the schedule saved, and the screening goes on.
+  - name: scripted_en_call_mid_screening_schedule_voice
+    inputs:
+      vacancy: es-bcn-gracia
+      name_on_application: federico gallo
+      application_language: en
+      now: 2026-10-26T06:04:00Z
+      profile: |
+        Federico, Italian, in Gràcia, Barcelona, with an Italian license valid in Spain. The chat as it happened, by
+        voice notes, then the call for the schedule question.
+      script:
+        - messages: ["Start"]
+        - messages: ["Yeah"]
+          provides: [full_name]
+          medium: voice_note
+        - messages: ["Yeah, I do have, uh, a Italian driving license"]
+          provides: [license]
+          medium: voice_note
+        - messages: ["Yes"]
+          provides: [license]
+          medium: voice_note
+        - messages: ["Uh, I'm not really practical with the Barcelona, but it's something like, uh, Barcelona Garcia. Possible?"]
+          provides: [service_area]
+          medium: voice_note
+        - messages: ["Yeah, right. Can you also tell me what, what is the pay rate for this job?"]
+          provides: [service_area]
+          medium: voice_note
+        - messages: ["weekends"]
+          provides: [availability]
+        - messages: ["In the afternoon."]
+          provides: [schedule]
+          medium: voice
+    metadata:
+      tags: [es, scripted, voice]
+      status: in_progress
+      final_language: en
+      answers:
+        full_name: Federico Gallo
+        license: "yes"
+        location_id: es-bcn-gracia
+        availability: [weekends]
+        schedule: [afternoon]
+
   # Diego, Sun 25 pm: the mid-chat reminder at the license ("Nos quedamos en el carnet de conducir. ¿Seguimos?") is
   # answered with "sí". That agrees to go on; it isn't a license, which is the knockout. Expected: the license stays
   # unknown and the agent asks the license question.

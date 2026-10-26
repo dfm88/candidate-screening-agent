@@ -380,7 +380,8 @@ class Call:
         ElevenLabs' history, which may not be ready: the candidate's words no turn answered, which the text worker
         answers in the chat; what was heard of turns cut off; and the turn cut off at the end, as sent. Then
         everything stored against ElevenLabs' history of the call, which knows how much of each of our lines was
-        played, and the call deleted there. We keep what was heard; ElevenLabs keeps nothing."""
+        played, and the call deleted there. We keep what was heard; ElevenLabs keeps nothing, unless VOICE_RECORDING
+        keeps the call there for the owner's test calls."""
         record = await self.service.call_record(self.candidate_id, self.call_id)
         lines = {
             position: line for position, line in enumerate(self.latest) if position not in record and words(line[1])
@@ -403,11 +404,14 @@ class Call:
             await self.service.correct_heard(self.candidate_id, found)
         else:
             logfire.warn("voice call history not ready: our lines kept as stored", conversation_id=conversation_id)
-        await elevenlabs.conversational_ai.conversations.delete(conversation_id)
+        kept = self.service.settings.voice_recording
+        if not kept:
+            await elevenlabs.conversational_ai.conversations.delete(conversation_id)
         logfire.info(
-            "voice call ended ({status}): {count} corrections from ElevenLabs' history, deleted there",
+            "voice call ended ({status}): {count} corrections from ElevenLabs' history, {where}",
             status=history.status,
             count=len(found),
+            where="kept there (VOICE_RECORDING)" if kept else "deleted there",
             conversation_id=conversation_id,
         )
 
@@ -438,11 +442,36 @@ async def configure_engines(ws_url: str, settings: Settings, config: ClientConfi
             tts=TtsConversationalConfigInput(voice_id=voice_id, text_normalisation_type="elevenlabs"),
             language=language.value,
             # No recording, and the shortest retention ElevenLabs takes; Call.end also deletes each call once we've
-            # stored what was heard. The process design says audio is deleted after transcription.
-            privacy=PrivacyConfigInput(record_voice=False, retention_days=1),
+            # stored what was heard. The process design says audio is deleted after transcription. VOICE_RECORDING
+            # (the owner's test calls only) records them; the service sets it again at startup (apply_recording).
+            privacy=PrivacyConfigInput(record_voice=settings.voice_recording, retention_days=1),
         )
         engines[language] = engine_id
     return engines
+
+
+async def apply_recording(elevenlabs: AsyncElevenLabs, settings: Settings) -> None:
+    """At startup: the engines record calls as VOICE_RECORDING says, so the Cloud Run console switches it, with no
+    deploy and no `python -m screening.voice`. Only that field changes (ElevenLabs merges the update); the rest is
+    configure_engines'. An edge: a failure is logged, and that engine keeps its setting."""
+    for language, engine_id in settings.speech_engines.items():
+        try:
+            engine = (await elevenlabs.speech_engine.get(engine_id)).config
+            if engine is None or engine.name != f"{SERVICE_NAME}-{settings.environment}-{language}":
+                # Another environment's engine (a local .env may name the demo's): its own service sets it.
+                logfire.info("voice recording left to its own environment on the {language} engine", language=language)
+                continue
+            await elevenlabs.speech_engine.update(
+                engine_id, privacy=PrivacyConfigInput(record_voice=settings.voice_recording)
+            )
+        except Exception:
+            logfire.exception("voice recording not set on the {language} engine", language=language)
+        else:
+            logfire.info(
+                "voice recording {state} on the {language} engine",
+                state="on" if settings.voice_recording else "off",
+                language=language,
+            )
 
 
 if __name__ == "__main__":

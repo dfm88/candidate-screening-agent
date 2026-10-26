@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     # lengths, ElevenLabs' conversation id, and the replies sent whole (an empty one, the failure line, our last line
     # said again). Not the transcripts. Our per-turn log line carries the conversation id, to join the two.
     voice_debug: bool = False
+    # For the owner's own test calls only, switched in the Cloud Run console: the engines record each call, and the
+    # end of the call no longer deletes it at ElevenLabs, which keeps it with its audio for the engines' retention
+    # (1 day), to play back in their dashboard. The service applies it to the engines at startup. Off for anyone
+    # else's calls: the process design says audio is deleted after transcription.
+    voice_recording: bool = False
 
 
 class Locale(StrEnum):

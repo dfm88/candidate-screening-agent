@@ -21,7 +21,15 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_evals import increment_eval_metric
 
-from screening.agent import Medium, RecruiterSummary, history_from_turns, run_turn, save_answers, write_summary
+from screening.agent import (
+    Medium,
+    RecruiterSummary,
+    call_history,
+    history_from_turns,
+    run_turn,
+    save_answers,
+    write_summary,
+)
 from screening.config import DEFAULT_CLIENT_CONFIG, Language, Locale, load_client_config
 from screening.domain import (
     Application,
@@ -61,6 +69,8 @@ class ScriptedTurn(BaseModel):
 
     messages: list[str]
     provides: list[FieldName] = []
+    # How this turn's messages came, when not as the case's do: a chat by voice notes, then a call.
+    medium: Medium | None = None
 
 
 class Persona(BaseModel):
@@ -72,8 +82,10 @@ class Persona(BaseModel):
     now: datetime
     profile: str
     max_turns: int = 14
-    # Voice: the turns read the voice rules too and are spoken as one reply, as in a call. The history is still the
-    # stored turns, tool calls included, not the call's transcript: no cut-offs, no speech-to-text.
+    # Voice: a live call from the first message on, or from a scripted turn marked voice after the chat. The turns
+    # read the voice rules and are spoken as one reply, and the history is the call's, as voice_turn builds it: the
+    # turns stored before the call, then the call from its transcript, without tool calls. No cut-offs, no
+    # speech-to-text.
     medium: Medium = Medium.TEXT
     # Fixed candidate messages, sent instead of the simulator's: a replayed failure.
     script: list[ScriptedTurn] | None = None
@@ -263,14 +275,19 @@ def make_task(
             city=location.city,
         )
         stored_turns: list[list[ModelMessage]] = [[ModelResponse(parts=[TextPart("\n\n".join(first_message))])]]
+        # A call's transcript so far, as (role, content) lines: what a voice turn reads after the stored turns.
+        call: list[tuple[str, str]] = []
         state = ScreeningState(status=Status.INVITED, language=application.language)
         conversation_id = f"eval-{uuid.uuid4().hex[:8]}"
         turns: list[Turn] = []
         decision: Outcome | None = None
 
         for number in range(len(persona.script) if persona.script else persona.max_turns):
+            medium = persona.medium
             if persona.script:
-                messages, provided, done = persona.script[number].messages, persona.script[number].provides, False
+                scripted = persona.script[number]
+                messages, provided, done = scripted.messages, scripted.provides, False
+                medium = scripted.medium or medium
             else:
                 so_far = ScreeningRun(first_message=first_message, turns=turns, state=state)
                 candidate = await simulator.run(
@@ -296,16 +313,19 @@ def make_task(
                 application=application,
                 config=CONFIG,
                 candidate_messages=messages,
-                history=history_from_turns(stored_turns, max_history_messages),
+                history=history_from_turns(stored_turns, max_history_messages) + call_history(call),
                 model=model,
                 now=persona.now,
                 conversation_id=conversation_id,
                 decision=decision,
-                medium=persona.medium,
+                medium=medium,
             )
             seconds = time.perf_counter() - started
             state = result.state
-            stored_turns.append(result.messages)
+            if medium is Medium.VOICE:
+                call += [("user", message) for message in messages] + [("agent", line) for line in result.reply]
+            else:
+                stored_turns.append(result.messages)
 
             responses = [message for message in result.messages if isinstance(message, ModelResponse)]
             costs = [response_cost(response) for response in responses]

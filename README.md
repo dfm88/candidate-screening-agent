@@ -206,7 +206,7 @@ Many drivers would rather talk than type, as they do on WhatsApp. The chat has a
 
 The chat has a call button: the candidate can do the screening by voice, with the same agent, tools and state. It shows when `ELEVENLABS_API_KEY` is set and the chat's language has an engine (`SPEECH_ENGINES`).
 
-**Demo only: ElevenLabs processes the audio in the US** (its API answers with `x-region: us-central1`). Like the direct model APIs, that's acceptable for the demo's synthetic data, not for real candidates. The engines don't record audio (`record_voice=False`), keep calls for 1 day (the shortest retention ElevenLabs takes), and we delete each call there once we've stored what was heard.
+**Demo only: ElevenLabs processes the audio in the US** (its API answers with `x-region: us-central1`). Like the direct model APIs, that's acceptable for the demo's synthetic data, not for real candidates. The engines don't record audio (`record_voice=False`), keep calls for 1 day (the shortest retention ElevenLabs takes), and we delete each call there once we've stored what was heard. `VOICE_RECORDING=true` is for the owner's own test calls only: the engines record calls, and the end of a call keeps it at ElevenLabs (1 day, the engines' retention) instead of deleting it, to play it back while debugging. It's switched in the Cloud Run console (a new revision): at startup the service sets the engines' `record_voice` to match, and `deploy.sh` keeps the service's value. It's off by default and off in the demo as delivered.
 
 ### How a call works
 

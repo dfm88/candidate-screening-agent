@@ -167,6 +167,15 @@ fi
 # The demo prints the ElevenLabs SDK's log of each call (event ids, not the transcripts) to Cloud Logging, to
 # trace a call that ElevenLabs ends on its side.
 env_vars="${env_vars};VOICE_DEBUG=${VOICE_DEBUG:-true}"
+# Calls recorded and kept at ElevenLabs, for the owner's test calls only. It's switched in the Cloud Run console, so a
+# deploy keeps the service's value unless one is given here; off on the first deploy.
+if [[ -z "${VOICE_RECORDING:-}" ]]; then
+  VOICE_RECORDING="$(gc run services describe "$SERVICE" --region "$REGION" \
+    --flatten='spec.template.spec.containers[].env[]' \
+    --format='csv[no-heading](spec.template.spec.containers.env.name,spec.template.spec.containers.env.value)' \
+    2>/dev/null | sed -n 's/^VOICE_RECORDING,//p' || true)"
+fi
+env_vars="${env_vars};VOICE_RECORDING=${VOICE_RECORDING:-false}"
 
 log "Deploying ${SERVICE} to Cloud Run"
 # Exactly one always-on instance with CPU always allocated: the in-process reminder loop, SSE streams and
